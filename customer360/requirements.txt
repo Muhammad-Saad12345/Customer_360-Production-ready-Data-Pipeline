@@ -1,0 +1,11 @@
+boto3
+requests
+python-dotenv
+tenacity
+apache-airflow==2.9.3
+psycopg2-binary
+pyarrow
+dbt-core>=1.8.0,<2.0.0
+dbt-athena-community>=1.8.0
+fastapi
+uvicorn

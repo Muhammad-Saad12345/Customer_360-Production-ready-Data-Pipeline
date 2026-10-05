@@ -1,0 +1,292 @@
+version: 2
+
+models:
+  - name: stg_hubspot_contacts
+    description: "Staged CRM contacts from HubSpot"
+    columns:
+      - name: hubspot_contact_id
+        tests:
+          - not_null
+          - unique
+      - name: email
+        tests:
+          - not_null
+      - name: source_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['hubspot']
+
+  - name: stg_oms_orders
+    description: "Staged orders from Order Management System"
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+      - name: net_total_amount
+        tests:
+          - not_null
+      - name: source_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['oms']
+
+  - name: stg_pim_products
+    description: "Staged product catalog from PIM"
+    columns:
+      - name: product_id
+        tests:
+          - not_null
+          - unique
+      - name: product_name
+        tests:
+          - not_null
+      - name: retail_price
+        tests:
+          - not_null
+
+  - name: stg_loyalty
+    description: "Staged customer loyalty ledger"
+    columns:
+      - name: loyalty_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+      - name: loyalty_tier
+        tests:
+          - not_null
+
+  - name: stg_marketing_campaign_events
+    description: "Staged campaign engagement events"
+    columns:
+      - name: event_id
+        tests:
+          - not_null
+          - unique
+      - name: campaign_id
+        tests:
+          - not_null
+
+  - name: stg_zendesk_tickets
+    description: "Staged support tickets from Zendesk"
+    columns:
+      - name: ticket_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+
+  - name: bridge_customer_identity
+    description: "Deterministic identity resolution bridge table mapping source IDs to Master Customer IDs"
+    columns:
+      - name: master_customer_id
+        tests:
+          - not_null
+      - name: source_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['hubspot', 'oms', 'loyalty', 'marketing', 'zendesk']
+      - name: source_customer_id
+        tests:
+          - not_null
+      - name: match_method
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [
+                  'authoritative_crm_primary',
+                  'authoritative_id_match',
+                  'exact_email_match',
+                  'exact_phone_match',
+                  'unresolved_singleton_exception'
+                ]
+      - name: match_confidence
+        tests:
+          - not_null
+
+  - name: dim_customer
+    description: "Golden Customer conformed dimension with explicit survivorship hierarchy"
+    columns:
+      - name: master_customer_id
+        tests:
+          - not_null
+          - unique
+      - name: full_name
+        tests:
+          - not_null
+      - name: loyalty_tier
+        tests:
+          - not_null
+      - name: lifetime_net_spend
+        tests:
+          - not_null
+
+  - name: dim_product
+    description: "Conformed product dimension"
+    columns:
+      - name: product_key
+        tests:
+          - not_null
+          - unique
+      - name: retail_price
+        tests:
+          - not_null
+
+  - name: dim_campaign
+    description: "Conformed marketing campaign dimension"
+    columns:
+      - name: campaign_key
+        tests:
+          - not_null
+          - unique
+
+  - name: fact_order
+    description: "Conformed transactional order fact table"
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: master_customer_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: master_customer_id
+      - name: net_total_amount
+        tests:
+          - not_null
+
+  - name: fact_support_case
+    description: "Conformed customer service case fact table"
+    columns:
+      - name: ticket_id
+        tests:
+          - not_null
+          - unique
+      - name: master_customer_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: master_customer_id
+
+  - name: customer_360
+    description: "Unified analytical 360-degree customer mart"
+    columns:
+      - name: master_customer_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_churn_risk
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Low Risk / Healthy', 'Medium Risk', 'High Risk']
+      - name: rfm_customer_segment
+        tests:
+          - not_null
+
+  - name: dim_date
+    description: "Standard calendar date dimension spine"
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - unique
+      - name: calendar_date
+        tests:
+          - not_null
+      - name: calendar_year
+        tests:
+          - not_null
+      - name: calendar_month
+        tests:
+          - not_null
+
+  - name: fact_campaign_engagement
+    description: "Conformed marketing campaign engagement fact table"
+    columns:
+      - name: event_id
+        tests:
+          - not_null
+          - unique
+      - name: campaign_id
+        tests:
+          - not_null
+      - name: master_customer_id
+        tests:
+          - not_null
+      - name: source_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['marketing']
+
+  - name: fact_loyalty_activity
+    description: "Conformed loyalty activity fact table"
+    columns:
+      - name: loyalty_id
+        tests:
+          - not_null
+          - unique
+      - name: master_customer_id
+        tests:
+          - not_null
+      - name: loyalty_tier
+        tests:
+          - not_null
+      - name: source_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['loyalty']
+
+  - name: mart_customer_metrics
+    description: "Cohort-level customer metrics aggregation mart"
+    columns:
+      - name: rfm_customer_segment
+        tests:
+          - not_null
+      - name: customer_churn_risk
+        tests:
+          - not_null
+      - name: customer_count
+        tests:
+          - not_null
+      - name: aggregate_net_revenue
+        tests:
+          - not_null
+
+  - name: mart_executive_kpis
+    description: "Enterprise-wide executive KPI summary mart"
+    columns:
+      - name: total_master_customers
+        tests:
+          - not_null
+      - name: enterprise_net_revenue
+        tests:
+          - not_null
+      - name: enterprise_csat_index
+        tests:
+          - not_null

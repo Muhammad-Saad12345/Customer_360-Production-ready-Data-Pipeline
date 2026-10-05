@@ -1,0 +1,35 @@
+name: 'customer360_dbt'
+version: '1.0.0'
+config-version: 2
+
+profile: 'customer360'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  customer360_dbt:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    identity:
+      +materialized: table
+      +table_type: iceberg
+    dimensions:
+      +materialized: table
+      +table_type: iceberg
+    facts:
+      +materialized: table
+      +table_type: iceberg
+    marts:
+      +materialized: table
+      +table_type: iceberg

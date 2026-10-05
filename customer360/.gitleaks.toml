@@ -1,0 +1,19 @@
+# Gitleaks Configuration for Customer 360 Lakehouse
+
+title = "Customer 360 Secret Detection Rules"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for sample documentation and test fixtures"
+paths = [
+  '''^\.env\.example$''',
+  '''^tests/''',
+  '''^mock_sources/''',
+]
+regexes = [
+  '''your_.*_here''',
+  '''example\.com''',
+  '''mock-.*''',
+]

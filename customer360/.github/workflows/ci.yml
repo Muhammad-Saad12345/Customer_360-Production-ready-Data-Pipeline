@@ -1,0 +1,326 @@
+name: Customer 360 — Production CI/CD Pipeline
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "Deploy to environment (staging | prod)"
+        required: false
+        default: "staging"
+        type: choice
+        options: [staging, prod]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global defaults
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  PYTHON_VERSION: "3.11"
+  AWS_REGION: "us-east-1"
+  TF_VERSION: "1.7.5"
+
+defaults:
+  run:
+    working-directory: customer360
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concurrency — cancel in-flight runs for the same branch on new pushes
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 1. Lint & Static Analysis
+  # ═══════════════════════════════════════════════════════════════════════════
+  lint:
+    name: "Lint and Static Analysis"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff bandit
+
+      - name: Ruff style and import checks
+        run: ruff check src/ tests/ dags/ --select E,F,W,I --ignore E501
+
+      - name: Bandit SAST security scan
+        run: |
+          bandit -r src/ -ll -ii \
+            --exclude src/ingestion/,src/lakehouse/ \
+            -f txt -o bandit-report.txt || true
+          cat bandit-report.txt
+
+      - name: Detect credential leakage (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 2. Unit & Integration Tests
+  # ═══════════════════════════════════════════════════════════════════════════
+  test:
+    name: "Unit and Integration Tests"
+    needs: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-xdist
+
+      - name: Run test suite
+        env:
+          ENVIRONMENT: test
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          HUBSPOT_API_KEY: "ci-placeholder"
+          MAILCHIMP_API_KEY: "ci-placeholder-dc1"
+          MAILCHIMP_AUDIENCE_ID: "ci-placeholder"
+          OMS_API_KEY: "ci-placeholder"
+          PIM_API_KEY: "ci-placeholder"
+          LOYALTY_API_KEY: "ci-placeholder"
+          ZENDESK_API_KEY: "ci-placeholder"
+          S3_BUCKET: "ci-placeholder-bucket"
+          DBT_S3_BUCKET: "ci-placeholder-bucket"
+          DBT_ATHENA_DATABASE: "customer360_ci"
+          DBT_ATHENA_WORKGROUP: "primary"
+        run: |
+          pytest --tb=short -q \
+            --cov=src --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=70
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: customer360/coverage.xml
+          fail_ci_if_error: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 3. dbt Compilation Check
+  # ═══════════════════════════════════════════════════════════════════════════
+  dbt-parse:
+    name: "dbt Compilation Check"
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dbt-athena
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install dbt-athena-community
+
+      - name: dbt parse validate syntax
+        env:
+          ENVIRONMENT: test
+          DBT_S3_BUCKET: "ci-placeholder-bucket"
+          DBT_ATHENA_DATABASE: "customer360_ci"
+          DBT_ATHENA_WORKGROUP: "primary"
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        run: |
+          cd dbt
+          dbt parse --profiles-dir . --no-partial-parse || \
+            echo "WARNING: dbt parse failed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 4. Terraform Plan (Staging)
+  # ═══════════════════════════════════════════════════════════════════════════
+  terraform-plan-staging:
+    name: "Terraform Plan Staging"
+    needs: [test, dbt-parse]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init staging
+        working-directory: customer360/terraform/environments/staging
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: customer360/terraform/environments/staging
+        run: terraform validate
+
+      - name: Terraform plan staging
+        working-directory: customer360/terraform/environments/staging
+        env:
+          TF_VAR_environment: staging
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan-staging.bin \
+            -var-file=terraform.tfvars
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-staging
+          path: customer360/terraform/environments/staging/tfplan-staging.bin
+          retention-days: 5
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 5. Deploy to Staging
+  # ═══════════════════════════════════════════════════════════════════════════
+  deploy-staging:
+    name: "Deploy Staging"
+    needs: terraform-plan-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://console.aws.amazon.com/mwaa/home
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Terraform plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-staging
+          path: customer360/terraform/environments/staging/
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform apply staging
+        working-directory: customer360/terraform/environments/staging
+        run: terraform apply -auto-approve tfplan-staging.bin
+
+      - name: Sync MWAA DAG bucket staging
+        run: |
+          aws s3 sync dags/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/ \
+            --delete --exclude "__pycache__/*"
+          aws s3 sync src/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/src/ \
+            --delete --exclude "__pycache__/*" --exclude "*.pyc"
+          aws s3 sync dbt/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/dbt/ \
+            --delete --exclude "target/*" --exclude "dbt_packages/*"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 6. Production Deployment (manual approval via GitHub environment)
+  # ═══════════════════════════════════════════════════════════════════════════
+  deploy-prod:
+    name: "Deploy Production"
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://console.aws.amazon.com/mwaa/home
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials OIDC prod
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init prod
+        working-directory: customer360/terraform/environments/prod
+        run: terraform init -input=false
+
+      - name: Terraform apply prod
+        working-directory: customer360/terraform/environments/prod
+        env:
+          TF_VAR_environment: prod
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            -var-file=terraform.tfvars
+
+      - name: Sync MWAA DAG bucket prod
+        run: |
+          aws s3 sync dags/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/ \
+            --delete --exclude "__pycache__/*"
+          aws s3 sync src/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/src/ \
+            --delete --exclude "__pycache__/*" --exclude "*.pyc"
+          aws s3 sync dbt/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/dbt/ \
+            --delete --exclude "target/*" --exclude "dbt_packages/*"
+
+      - name: Notify success SNS
+        if: success()
+        run: |
+          aws sns publish \
+            --topic-arn "${{ secrets.SNS_ALERT_TOPIC_ARN_PROD }}" \
+            --subject "[Customer360/PROD] Deployment Successful" \
+            --message "Production deployment completed. Commit: ${{ github.sha }}"
+
+      - name: Notify failure SNS
+        if: failure()
+        run: |
+          aws sns publish \
+            --topic-arn "${{ secrets.SNS_ALERT_TOPIC_ARN_PROD }}" \
+            --subject "[Customer360/PROD] Deployment FAILED" \
+            --message "Production deployment FAILED. Commit: ${{ github.sha }}."

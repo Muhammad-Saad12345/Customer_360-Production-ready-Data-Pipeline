@@ -1,0 +1,106 @@
+{
+  "timestamp": "2026-09-24T19:15:26.433980+00:00",
+  "dry_run": false,
+  "results": [
+    {
+      "source": "hubspot",
+      "entity": "contacts",
+      "table": "hubspot_contacts",
+      "s3_key": "silver/hubspot/contacts/ingestion_date=2026-09-24/run_id=3a73d5c3-d266-4c48-8b8d-a897da06464c/data.parquet",
+      "silver_rows": 1,
+      "merge_batches": 1,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "success",
+      "errors": []
+    },
+    {
+      "source": "hubspot",
+      "entity": "orders",
+      "table": "hubspot_orders",
+      "s3_key": null,
+      "silver_rows": 0,
+      "merge_batches": 0,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "no_silver_data",
+      "errors": [
+        "No Silver Parquet found in S3"
+      ]
+    },
+    {
+      "source": "hubspot",
+      "entity": "products",
+      "table": "hubspot_products",
+      "s3_key": null,
+      "silver_rows": 0,
+      "merge_batches": 0,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "no_silver_data",
+      "errors": [
+        "No Silver Parquet found in S3"
+      ]
+    },
+    {
+      "source": "oms",
+      "entity": "orders",
+      "table": "oms_orders",
+      "s3_key": "silver/oms/orders/ingestion_date=2026-09-24/run_id=oms-valid-001/data.parquet",
+      "silver_rows": 1,
+      "merge_batches": 1,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "success",
+      "errors": []
+    },
+    {
+      "source": "pim",
+      "entity": "products",
+      "table": "pim_products",
+      "s3_key": "silver/pim/products/ingestion_date=2026-09-24/run_id=pim-valid-001/data.parquet",
+      "silver_rows": 1,
+      "merge_batches": 1,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "success",
+      "errors": []
+    },
+    {
+      "source": "loyalty",
+      "entity": "loyalty",
+      "table": "loyalty_loyalty",
+      "s3_key": "silver/loyalty/loyalty/ingestion_date=2026-09-24/run_id=loyal-idempotent/data.parquet",
+      "silver_rows": 1,
+      "merge_batches": 1,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "success",
+      "errors": []
+    },
+    {
+      "source": "marketing",
+      "entity": "campaign_events",
+      "table": "marketing_campaign_events",
+      "s3_key": "silver/marketing/campaign_events/ingestion_date=2026-09-24/run_id=77a7c057-6735-4e2c-85f7-dd3ff44e1731/data.parquet",
+      "silver_rows": 0,
+      "merge_batches": 0,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "empty_silver",
+      "errors": []
+    },
+    {
+      "source": "mailchimp",
+      "entity": "campaign_events",
+      "table": "marketing_campaign_events",
+      "s3_key": "silver/mailchimp/campaign_events/ingestion_date=2026-09-24/run_id=mail-valid-001/data.parquet",
+      "silver_rows": 1,
+      "merge_batches": 1,
+      "iceberg_count_before": null,
+      "iceberg_count_after": null,
+      "status": "success",
+      "errors": []
+    }
+  ]
+}

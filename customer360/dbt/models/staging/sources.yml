@@ -1,0 +1,173 @@
+version: 2
+
+sources:
+  - name: iceberg_silver
+    database: awsdatacatalog
+    schema: customer360_iceberg
+    description: "Trusted Apache Iceberg Silver layer tables in AWS Glue Data Catalog"
+    tables:
+      - name: hubspot_contacts
+        description: "Validated CRM contacts from HubSpot (HubSpot owns contacts ONLY)"
+        columns:
+          - name: customer_id
+            description: "HubSpot primary contact identifier"
+          - name: email
+            description: "Primary contact email address"
+          - name: phone
+            description: "Primary contact phone number"
+          - name: first_name
+            description: "Customer first name"
+          - name: last_name
+            description: "Customer surname"
+          - name: customer_stage
+            description: "Lifecycle stage e.g. lead, subscriber, customer"
+          - name: created_at
+            description: "ISO timestamp of contact creation"
+          - name: updated_at
+            description: "ISO timestamp of last update"
+          - name: owner_id
+            description: "HubSpot sales representative / account owner ID"
+          - name: ingestion_timestamp
+            description: "Timestamp when record was promoted to Silver"
+          - name: ingestion_date
+            description: "Partition date"
+
+      - name: oms_orders
+        description: "Validated orders from Order Management System (OMS is the SOLE order authority)"
+        columns:
+          - name: order_id
+            description: "Unique order identifier"
+          - name: customer_id
+            description: "Foreign key to customer"
+          - name: order_ts
+            description: "Order timestamp"
+          - name: order_status
+            description: "Status: paid, shipped, fulfilled, cancelled, etc."
+          - name: subtotal
+            description: "Order subtotal amount"
+          - name: tax
+            description: "Tax charge amount"
+          - name: shipping
+            description: "Shipping fee amount"
+          - name: discount
+            description: "Discount applied amount"
+          - name: net_total
+            description: "Net revenue amount"
+          - name: currency
+            description: "Three-letter ISO currency code"
+          - name: channel
+            description: "Sales channel e.g. web, mobile, retail"
+          - name: updated_at
+            description: "Order last updated timestamp"
+          - name: ingestion_date
+            description: "Partition date"
+
+      - name: pim_products
+        description: "Validated product catalog from Product Information Management (PIM is the SOLE product authority)"
+        columns:
+          - name: product_id
+            description: "Unique product identifier"
+          - name: sku
+            description: "Stock keeping unit"
+          - name: name
+            description: "Product commercial title"
+          - name: category
+            description: "Merchandise category"
+          - name: brand
+            description: "Product brand"
+          - name: price
+            description: "Retail selling price"
+          - name: cost
+            description: "Wholesale unit cost"
+          - name: attributes
+            description: "Serialized JSON attributes"
+          - name: status
+            description: "Product status: active, archived, draft, retired"
+          - name: launch_date
+            description: "Commercial launch date"
+          - name: updated_at
+            description: "Catalog update timestamp"
+          - name: ingestion_date
+            description: "Partition date"
+
+      - name: loyalty_loyalty
+        description: "Validated customer loyalty ledger and reward balance"
+        columns:
+          - name: loyalty_id
+            description: "Loyalty account identifier"
+          - name: customer_id
+            description: "Foreign key to customer"
+          - name: tier
+            description: "Loyalty tier: bronze, silver, gold, platinum, diamond"
+          - name: points_balance
+            description: "Current reward points balance"
+          - name: earn_ts
+            description: "Last points accrual timestamp"
+          - name: redeem_ts
+            description: "Last points redemption timestamp"
+          - name: benefit_code
+            description: "Promotional benefit voucher code"
+          - name: updated_at
+            description: "Loyalty account update timestamp"
+          - name: ingestion_date
+            description: "Partition date"
+
+      - name: marketing_campaign_events
+        description: "Validated email and marketing broadcast engagement events"
+        columns:
+          - name: record_id
+            description: "Unique composite engagement identifier"
+          - name: campaign_id
+            description: "Marketing campaign identifier"
+          - name: customer_id
+            description: "Recipient customer identifier"
+          - name: channel
+            description: "Engagement channel e.g. email, sms"
+          - name: send_ts
+            description: "Dispatch timestamp"
+          - name: open_ts
+            description: "Open timestamp"
+          - name: click_ts
+            description: "Click timestamp"
+          - name: audience_id
+            description: "Audience segment ID"
+          - name: offer_id
+            description: "Voucher / offer code"
+          - name: member_id
+            description: "Marketing subscriber ID"
+          - name: email_address
+            description: "Recipient email address"
+          - name: status
+            description: "Engagement status"
+          - name: source_type
+            description: "Provider e.g. mailchimp, synthetic"
+          - name: ingestion_date
+            description: "Partition date"
+
+      - name: zendesk_tickets
+        description: "Validated customer service and support tickets from Zendesk"
+        columns:
+          - name: ticket_id
+            description: "Zendesk ticket identifier"
+          - name: customer_id
+            description: "Customer identifier"
+          - name: channel
+            description: "Support channel: email, web, chat, phone, api"
+          - name: category
+            description: "Issue category e.g. billing, technical, returns"
+          - name: priority
+            description: "Priority: low, normal, high, urgent"
+          - name: status
+            description: "Ticket status: new, open, pending, hold, solved, closed"
+          - name: agent_id
+            description: "Assignee support agent"
+          - name: created_at
+            description: "Ticket creation timestamp"
+          - name: resolved_at
+            description: "Ticket resolution timestamp"
+          - name: csat_score
+            description: "Customer satisfaction rating (1-5)"
+          - name: source_type
+            description: "Provider type e.g. synthetic, zendesk_api"
+          - name: ingestion_date
+            description: "Partition date"

@@ -1,0 +1,32 @@
+customer360:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: athena
+      s3_staging_dir: "{{ env_var('DBT_S3_STAGING_DIR', 's3://' ~ env_var('S3_BUCKET', 'c360-bucket786') ~ '/athena-results/') }}"
+      s3_data_dir: "{{ env_var('DBT_S3_DATA_DIR', 's3://' ~ env_var('S3_BUCKET', 'c360-bucket786') ~ '/iceberg/') }}"
+      schema: "{{ env_var('DBT_SCHEMA', env_var('ICEBERG_DATABASE', 'customer360_iceberg')) }}"
+      database: awsdatacatalog
+      region_name: "{{ env_var('AWS_DEFAULT_REGION', env_var('AWS_REGION', 'us-east-1')) }}"
+      work_group: "{{ env_var('ATHENA_WORKGROUP', 'primary') }}"
+      threads: 4
+
+    staging:
+      type: athena
+      s3_staging_dir: "{{ env_var('DBT_S3_STAGING_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-stage') ~ '/athena-results/') }}"
+      s3_data_dir: "{{ env_var('DBT_S3_DATA_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-stage') ~ '/iceberg/') }}"
+      schema: "{{ env_var('DBT_SCHEMA', env_var('ICEBERG_DATABASE', 'customer360_iceberg_stage')) }}"
+      database: awsdatacatalog
+      region_name: "{{ env_var('AWS_DEFAULT_REGION', env_var('AWS_REGION', 'us-east-1')) }}"
+      work_group: "{{ env_var('ATHENA_WORKGROUP', 'customer360_staging') }}"
+      threads: 4
+
+    prod:
+      type: athena
+      s3_staging_dir: "{{ env_var('DBT_S3_STAGING_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-prod') ~ '/athena-results/') }}"
+      s3_data_dir: "{{ env_var('DBT_S3_DATA_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-prod') ~ '/iceberg/') }}"
+      schema: "{{ env_var('DBT_SCHEMA', env_var('ICEBERG_DATABASE', 'customer360_iceberg')) }}"
+      database: awsdatacatalog
+      region_name: "{{ env_var('AWS_DEFAULT_REGION', env_var('AWS_REGION', 'us-east-1')) }}"
+      work_group: "{{ env_var('ATHENA_WORKGROUP', 'customer360_prod') }}"
+      threads: 8

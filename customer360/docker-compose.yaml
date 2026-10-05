@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-webserver:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__FERNET_KEY: 'J5KT5sGoAQYl6gvDq2rVFTlH5fVHVN1c0F6EtG7-yL8='
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__ENABLE_XCOM_PICKLING: 'true'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      PYTHONPATH: /opt/airflow
+      OMS_BASE_URL: http://host.docker.internal:8001
+      PIM_BASE_URL: http://host.docker.internal:8002
+      LOYALTY_BASE_URL: http://host.docker.internal:8003
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./dbt:/opt/airflow/dbt
+      - ./mock_sources:/opt/airflow/mock_sources
+      - ./.env:/opt/airflow/.env:ro
+      - ./.checkpoints:/opt/airflow/.checkpoints
+    ports:
+      - "8080:8080"
+    restart: on-failure
+    command: >
+      bash -lc "airflow db init && (airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true) && exec airflow webserver"
+
+  airflow-scheduler:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__FERNET_KEY: 'J5KT5sGoAQYl6gvDq2rVFTlH5fVHVN1c0F6EtG7-yL8='
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__ENABLE_XCOM_PICKLING: 'true'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      PYTHONPATH: /opt/airflow
+      OMS_BASE_URL: http://host.docker.internal:8001
+      PIM_BASE_URL: http://host.docker.internal:8002
+      LOYALTY_BASE_URL: http://host.docker.internal:8003
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./dbt:/opt/airflow/dbt
+      - ./mock_sources:/opt/airflow/mock_sources
+      - ./.env:/opt/airflow/.env:ro
+      - ./.checkpoints:/opt/airflow/.checkpoints
+    restart: on-failure
+    command: bash -lc "airflow scheduler"
+
+volumes:
+  postgres_data:

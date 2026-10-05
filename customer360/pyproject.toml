@@ -1,0 +1,17 @@
+[project]
+name = "customer360-ingestion"
+version = "0.1.0"
+description = "Customer 360 Multi-Source Lakehouse Ingestion, DQ Gate, and Apache Iceberg Layer"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+	"boto3",
+	"fastapi",
+	"httpx",
+	"pyarrow>=25.0.1",
+	"pytest>=9.1.1",
+	"python-dotenv",
+	"requests",
+	"tenacity",
+	"uvicorn",
+]

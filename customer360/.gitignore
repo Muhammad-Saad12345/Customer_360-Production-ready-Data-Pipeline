@@ -1,0 +1,86 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+
+# Python & virtual environments
+.venv/
+dbt_venv/
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Testing & quality caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+
+# Local pipeline data & execution artifacts (Customer PII & Watermarks)
+.checkpoints/
+quarantine/
+logs/
+*.log
+*.parquet
+*.jsonlines
+*.jsonl
+
+# dbt artifacts
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+target/
+dbt_packages/
+
+# Scratch & ad-hoc test scripts
+scratch/
+scratch_user_prompt.txt
+
+# IDE & Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Terraform runtime files
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
