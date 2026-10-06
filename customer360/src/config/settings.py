@@ -76,11 +76,11 @@ def get_settings() -> Settings:
     if env in ("prod", "production"):
         default_bucket = "customer360-lakehouse-prod"
         default_db = "customer360_iceberg"
-        default_wg = "customer360_prod"
+        default_wg = "customer360-prod"
     elif env in ("staging", "stage"):
-        default_bucket = "customer360-lakehouse-stage"
+        default_bucket = "c360-bucket786"       # real deployed bucket
         default_db = "customer360_iceberg_stage"
-        default_wg = "customer360_staging"
+        default_wg = "customer360-staging"      # hyphen, matches Terraform resource
     else:  # dev / test
         default_bucket = "customer360-lakehouse-dev"
         default_db = "customer360_iceberg_dev"

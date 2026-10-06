@@ -18,20 +18,21 @@ on:
         options: [staging, prod]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Global defaults
+# Global env & defaults
 # ─────────────────────────────────────────────────────────────────────────────
 env:
   PYTHON_VERSION: "3.11"
   AWS_REGION: "us-east-1"
   TF_VERSION: "1.7.5"
+  # Real bucket names — NOT secrets (bucket names are not credentials)
+  MWAA_BUCKET: "c360-mwaa-prod-786"
+  LAKEHOUSE_BUCKET: "c360-bucket786"
 
+# All steps run from inside customer360/ sub-directory
 defaults:
   run:
     working-directory: customer360
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Concurrency — cancel in-flight runs for the same branch on new pushes
-# ─────────────────────────────────────────────────────────────────────────────
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -55,10 +56,10 @@ jobs:
       - name: Install lint tools
         run: pip install ruff bandit
 
-      - name: Ruff style and import checks
+      - name: Ruff — style and import checks
         run: ruff check src/ tests/ dags/ --select E,F,W,I --ignore E501
 
-      - name: Bandit SAST security scan
+      - name: Bandit — SAST security scan
         run: |
           bandit -r src/ -ll -ii \
             --exclude src/ingestion/,src/lakehouse/ \
@@ -97,13 +98,17 @@ jobs:
         env:
           ENVIRONMENT: test
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          # CI placeholder values — never real credentials
           HUBSPOT_API_KEY: "ci-placeholder"
           MAILCHIMP_API_KEY: "ci-placeholder-dc1"
           MAILCHIMP_AUDIENCE_ID: "ci-placeholder"
+          MAILCHIMP_SERVER_PREFIX: "us1"
           OMS_API_KEY: "ci-placeholder"
           PIM_API_KEY: "ci-placeholder"
           LOYALTY_API_KEY: "ci-placeholder"
           ZENDESK_API_KEY: "ci-placeholder"
+          ZENDESK_EMAIL: "ci@example.com"
+          ZENDESK_SUBDOMAIN: "ci-placeholder"
           S3_BUCKET: "ci-placeholder-bucket"
           DBT_S3_BUCKET: "ci-placeholder-bucket"
           DBT_ATHENA_DATABASE: "customer360_ci"
@@ -140,49 +145,49 @@ jobs:
       - name: Install dbt-athena
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install dbt-athena-community
+          pip install dbt-core==1.8.7 dbt-athena-community==1.8.3
 
-      - name: dbt parse validate syntax
+      - name: dbt parse — validate model syntax (no AWS calls)
         env:
           ENVIRONMENT: test
-          DBT_S3_BUCKET: "ci-placeholder-bucket"
-          DBT_ATHENA_DATABASE: "customer360_ci"
-          DBT_ATHENA_WORKGROUP: "primary"
+          S3_BUCKET: "ci-placeholder-bucket"
+          ICEBERG_DATABASE: "customer360_ci"
+          ATHENA_WORKGROUP: "primary"
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
         run: |
           cd dbt
-          dbt parse --profiles-dir . --no-partial-parse || \
-            echo "WARNING: dbt parse failed"
+          dbt parse --profiles-dir . --no-partial-parse \
+            || echo "WARNING: dbt parse failed — check model syntax"
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 4. Terraform Plan (Staging)
+  # 4. Terraform Plan — Staging
+  # (runs on PRs to main AND on pushes to main)
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-plan-staging:
-    name: "Terraform Plan Staging"
+    name: "Terraform Plan — Staging"
     needs: [test, dbt-parse]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     permissions:
       contents: read
-      id-token: write
+      id-token: write   # Required for OIDC authentication
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials OIDC
+      - name: Configure AWS credentials (OIDC — staging)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Terraform
+      - name: Setup Terraform ${{ env.TF_VERSION }}
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform init staging
+      - name: Terraform init (staging)
         working-directory: customer360/terraform/environments/staging
         run: terraform init -input=false
 
@@ -190,17 +195,17 @@ jobs:
         working-directory: customer360/terraform/environments/staging
         run: terraform validate
 
-      - name: Terraform plan staging
+      - name: Terraform plan (staging)
         working-directory: customer360/terraform/environments/staging
-        env:
-          TF_VAR_environment: staging
         run: |
           terraform plan \
             -input=false \
             -out=tfplan-staging.bin \
             -var-file=terraform.tfvars
+        env:
+          TF_VAR_environment: staging
 
-      - name: Upload plan artifact
+      - name: Upload Terraform plan artifact
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-staging
@@ -209,14 +214,15 @@ jobs:
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 5. Deploy to Staging
+  # (main branch push only — not PRs)
   # ═══════════════════════════════════════════════════════════════════════════
   deploy-staging:
-    name: "Deploy Staging"
+    name: "Deploy — Staging"
     needs: terraform-plan-staging
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: https://console.aws.amazon.com/mwaa/home
+      url: https://console.aws.amazon.com/mwaa/home?region=us-east-1
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     permissions:
@@ -226,46 +232,164 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials OIDC
+      - name: Configure AWS credentials (OIDC — staging)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Download Terraform plan
+      - name: Download Terraform plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-staging
           path: customer360/terraform/environments/staging/
 
-      - name: Setup Terraform
+      - name: Setup Terraform ${{ env.TF_VERSION }}
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform apply staging
+      - name: Terraform init (staging)
+        working-directory: customer360/terraform/environments/staging
+        run: terraform init -input=false
+
+      - name: Terraform apply (staging)
         working-directory: customer360/terraform/environments/staging
         run: terraform apply -auto-approve tfplan-staging.bin
 
-      - name: Sync MWAA DAG bucket staging
+      # ── Sync MWAA artifacts to c360-mwaa-prod-786 ───────────────────────
+      # working-directory is customer360/ so paths are relative to that
+
+      - name: Sync MWAA requirements
         run: |
-          aws s3 sync dags/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/ \
-            --delete --exclude "__pycache__/*"
-          aws s3 sync src/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/src/ \
-            --delete --exclude "__pycache__/*" --exclude "*.pyc"
-          aws s3 sync dbt/ s3://${{ secrets.MWAA_DAG_BUCKET_STAGING }}/dags/dbt/ \
-            --delete --exclude "target/*" --exclude "dbt_packages/*"
+          aws s3 cp mwaa_requirements.txt \
+            s3://${{ env.MWAA_BUCKET }}/requirements.txt
+
+      - name: Sync DAG files
+        run: |
+          aws s3 sync dags/ s3://${{ env.MWAA_BUCKET }}/dags/ \
+            --delete \
+            --exclude "__pycache__/*" \
+            --exclude "*.pyc"
+
+      - name: Sync src package
+        run: |
+          aws s3 sync src/ s3://${{ env.MWAA_BUCKET }}/dags/src/ \
+            --delete \
+            --exclude "__pycache__/*" \
+            --exclude "*.pyc"
+
+      - name: Sync dbt project
+        run: |
+          aws s3 sync dbt/ s3://${{ env.MWAA_BUCKET }}/dags/dbt/ \
+            --delete \
+            --exclude "target/*" \
+            --exclude "dbt_packages/*" \
+            --exclude "logs/*"
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 6. Production Deployment (manual approval via GitHub environment)
+  # 6. Staging Integration Test
+  # Waits for DAG to appear in MWAA, then triggers and polls to completion
   # ═══════════════════════════════════════════════════════════════════════════
-  deploy-prod:
-    name: "Deploy Production"
+  staging-integration-test:
+    name: "Staging Integration Test"
     needs: deploy-staging
     runs-on: ubuntu-latest
     environment:
+      name: staging
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC — staging)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install AWS CLI extras
+        run: pip install boto3 requests
+
+      - name: Wait for MWAA to become available and trigger DAG
+        env:
+          MWAA_ENV_NAME: "customer360-staging"
+        run: |
+          python - <<'PYEOF'
+          import boto3, time, sys
+
+          mwaa = boto3.client("mwaa", region_name="us-east-1")
+          env_name = "customer360-staging"
+
+          # Wait up to 10 minutes for MWAA to be AVAILABLE
+          for attempt in range(20):
+              resp = mwaa.get_environment(Name=env_name)
+              status = resp["Environment"]["Status"]
+              print(f"MWAA status: {status}")
+              if status == "AVAILABLE":
+                  break
+              if attempt == 19:
+                  print("ERROR: MWAA not available after 10 minutes")
+                  sys.exit(1)
+              time.sleep(30)
+
+          # Get CLI token and trigger customer360_batch DAG
+          import json, urllib.request, urllib.error
+          token_resp = mwaa.create_cli_token(Name=env_name)
+          token = token_resp["CliToken"]
+          host  = token_resp["WebServerHostname"]
+
+          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          url = f"https://{host}/api/v1/dags/customer360_batch/dagRuns"
+          data = json.dumps({"conf": {"triggered_by": "ci_integration_test"}}).encode()
+
+          req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+          try:
+              with urllib.request.urlopen(req) as r:
+                  body = json.loads(r.read())
+                  run_id = body["dag_run_id"]
+                  print(f"DAG run triggered: {run_id}")
+          except urllib.error.HTTPError as e:
+              print(f"ERROR triggering DAG: {e.code} {e.read()}")
+              sys.exit(1)
+
+          # Poll for up to 30 minutes
+          poll_url = f"https://{host}/api/v1/dags/customer360_batch/dagRuns/{run_id}"
+          for poll in range(60):
+              time.sleep(30)
+              req2 = urllib.request.Request(poll_url, headers=headers)
+              with urllib.request.urlopen(req2) as r2:
+                  run_data = json.loads(r2.read())
+                  state = run_data["state"]
+                  print(f"  DAG run state ({poll+1}/60): {state}")
+                  if state == "success":
+                      print("Integration test PASSED")
+                      sys.exit(0)
+                  if state in ("failed", "upstream_failed"):
+                      print("Integration test FAILED")
+                      sys.exit(1)
+
+          print("ERROR: DAG run did not complete in 30 minutes")
+          sys.exit(1)
+          PYEOF
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 7. Production Deployment (manual approval gate via GitHub environment)
+  # ═══════════════════════════════════════════════════════════════════════════
+  deploy-prod:
+    name: "Deploy — Production"
+    needs: staging-integration-test
+    runs-on: ubuntu-latest
+    environment:
       name: production
-      url: https://console.aws.amazon.com/mwaa/home
+      url: https://console.aws.amazon.com/mwaa/home?region=us-east-1
     if: github.ref == 'refs/heads/main'
 
     permissions:
@@ -275,41 +399,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials OIDC prod
+      - name: Configure AWS credentials (OIDC — production)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_PROD }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Terraform
+      - name: Setup Terraform ${{ env.TF_VERSION }}
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform init prod
+      - name: Terraform init (prod)
         working-directory: customer360/terraform/environments/prod
         run: terraform init -input=false
 
-      - name: Terraform apply prod
+      - name: Terraform plan (prod)
         working-directory: customer360/terraform/environments/prod
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan-prod.bin \
+            -var-file=terraform.tfvars
         env:
           TF_VAR_environment: prod
-        run: |
-          terraform apply \
-            -input=false \
-            -auto-approve \
-            -var-file=terraform.tfvars
 
-      - name: Sync MWAA DAG bucket prod
+      - name: Terraform apply (prod)
+        working-directory: customer360/terraform/environments/prod
+        run: terraform apply -auto-approve tfplan-prod.bin
+
+      - name: Sync MWAA requirements (prod)
         run: |
-          aws s3 sync dags/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/ \
-            --delete --exclude "__pycache__/*"
-          aws s3 sync src/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/src/ \
+          aws s3 cp mwaa_requirements.txt \
+            s3://${{ env.MWAA_BUCKET }}/requirements.txt
+
+      - name: Sync DAGs (prod)
+        run: |
+          aws s3 sync dags/ s3://${{ env.MWAA_BUCKET }}/dags/ \
             --delete --exclude "__pycache__/*" --exclude "*.pyc"
-          aws s3 sync dbt/ s3://${{ secrets.MWAA_DAG_BUCKET_PROD }}/dags/dbt/ \
-            --delete --exclude "target/*" --exclude "dbt_packages/*"
+          aws s3 sync src/ s3://${{ env.MWAA_BUCKET }}/dags/src/ \
+            --delete --exclude "__pycache__/*" --exclude "*.pyc"
+          aws s3 sync dbt/ s3://${{ env.MWAA_BUCKET }}/dags/dbt/ \
+            --delete --exclude "target/*" --exclude "dbt_packages/*" --exclude "logs/*"
 
-      - name: Notify success SNS
+      - name: Notify — deployment success (SNS)
         if: success()
         run: |
           aws sns publish \
@@ -317,10 +450,10 @@ jobs:
             --subject "[Customer360/PROD] Deployment Successful" \
             --message "Production deployment completed. Commit: ${{ github.sha }}"
 
-      - name: Notify failure SNS
+      - name: Notify — deployment failure (SNS)
         if: failure()
         run: |
           aws sns publish \
             --topic-arn "${{ secrets.SNS_ALERT_TOPIC_ARN_PROD }}" \
             --subject "[Customer360/PROD] Deployment FAILED" \
-            --message "Production deployment FAILED. Commit: ${{ github.sha }}."
+            --message "Production deployment FAILED. Commit: ${{ github.sha }}. Check Actions run for details."
