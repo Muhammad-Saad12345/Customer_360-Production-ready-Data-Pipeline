@@ -22,9 +22,9 @@ tenacity>=8.2.0
 # Parquet serialization (silver gate, Iceberg staging)
 pyarrow>=14.0.0
 
-# dbt-athena (pinned for reproducibility)
-dbt-core==1.8.7
-dbt-athena-community==1.8.3
+# Note: dbt-athena-community pins mmh3<4.2.0 and tenacity<8.3 which directly conflicts
+# with Airflow 2.11.2 constraints (mmh3==5.2.1, tenacity==9.1.4), causing pip to crash.
+# DAG transformations run via Athena CTAS / IcebergLoader or containerized dbt runners.
 
 # Airflow Amazon provider (Secrets Manager backend, S3, etc.)
 apache-airflow-providers-amazon>=8.0.0
