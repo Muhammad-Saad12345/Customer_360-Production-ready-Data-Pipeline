@@ -27,7 +27,7 @@ class TestDbtProjectStructure(unittest.TestCase):
         with open(sources_file, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         src = data["sources"][0]
-        self.assertEqual(src["schema"], "customer360_iceberg")
+        self.assertIn("customer360_iceberg", src["schema"])
         table_names = {t["name"] for t in src["tables"]}
         expected_tables = {
             "hubspot_contacts",

@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: iceberg_silver
     database: awsdatacatalog
-    schema: customer360_iceberg
+    schema: "{{ env_var('ICEBERG_DATABASE', 'customer360_iceberg') }}"
     description: "Trusted Apache Iceberg Silver layer tables in AWS Glue Data Catalog"
     tables:
       - name: hubspot_contacts

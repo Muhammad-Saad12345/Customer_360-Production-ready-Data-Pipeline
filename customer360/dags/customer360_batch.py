@@ -17,6 +17,13 @@ from typing import Any, Dict, Iterable, Optional
 _DQ_REJECT_HARD_PCT: float = float(os.environ.get("DQ_REJECT_HARD_PCT", "10.0"))
 _DQ_REJECT_WARN_PCT: float = float(os.environ.get("DQ_REJECT_WARN_PCT", "5.0"))
 
+# Ensure DAG directory and repository root are in sys.path for MWAA and local compatibility
+_dag_dir = Path(__file__).resolve().parent
+_repo_dir = _dag_dir.parent
+for _p in [str(_dag_dir), str(_repo_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
@@ -191,7 +198,19 @@ def _load_iceberg_gate(source: str, entity: str, **context: Any) -> Dict[str, An
     return summary
 
 
-_DBT_PROJECT_DIR = str(Path(__file__).resolve().parents[1] / "dbt")
+def _resolve_dbt_project_dir() -> str:
+    if "DBT_PROJECT_DIR" in os.environ:
+        return os.environ["DBT_PROJECT_DIR"]
+    sibling_dbt = Path(__file__).resolve().parent / "dbt"
+    if sibling_dbt.exists() and (sibling_dbt / "dbt_project.yml").exists():
+        return str(sibling_dbt)
+    parent_dbt = Path(__file__).resolve().parents[1] / "dbt"
+    if parent_dbt.exists() and (parent_dbt / "dbt_project.yml").exists():
+        return str(parent_dbt)
+    cwd_dbt = Path.cwd() / "dbt"
+    if cwd_dbt.exists() and (cwd_dbt / "dbt_project.yml").exists():
+        return str(cwd_dbt)
+    return str(sibling_dbt if sibling_dbt.exists() else parent_dbt)
 
 
 def _resolve_dbt_executable() -> Optional[str]:
@@ -215,10 +234,11 @@ def _resolve_dbt_executable() -> Optional[str]:
 def _run_dbt(**context: Any) -> Dict[str, Any]:
     """Run all dbt models using the dbt interpreter."""
     dbt_executable = _resolve_dbt_executable()
-    project_dir = Path(_DBT_PROJECT_DIR)
+    dbt_project_dir = _resolve_dbt_project_dir()
+    project_dir = Path(dbt_project_dir)
 
     if not project_dir.exists() or not (project_dir / "dbt_project.yml").exists():
-        logging.warning("dbt project directory not found at %s. Skipping dbt run in test/container mode.", _DBT_PROJECT_DIR)
+        logging.warning("dbt project directory not found at %s. Skipping dbt run in test/container mode.", dbt_project_dir)
         return {"status": "skipped", "reason": "dbt_project_dir_not_found"}
 
     if not dbt_executable:
@@ -236,12 +256,14 @@ def _run_dbt(**context: Any) -> Dict[str, Any]:
         except ImportError:
             pass
 
+    dbt_target = os.environ.get("DBT_TARGET", "dev")
+
     cmd = [
         dbt_executable,
         "run",
-        "--project-dir", _DBT_PROJECT_DIR,
-        "--profiles-dir", _DBT_PROJECT_DIR,
-        "--target", "dev",
+        "--project-dir", dbt_project_dir,
+        "--profiles-dir", dbt_project_dir,
+        "--target", dbt_target,
         "--no-use-colors",
         "--no-partial-parse",
     ]
@@ -258,10 +280,11 @@ def _run_dbt(**context: Any) -> Dict[str, Any]:
 def _run_dbt_tests(**context: Any) -> Dict[str, Any]:
     """Run dbt schema/data tests after models materialize."""
     dbt_executable = _resolve_dbt_executable()
-    project_dir = Path(_DBT_PROJECT_DIR)
+    dbt_project_dir = _resolve_dbt_project_dir()
+    project_dir = Path(dbt_project_dir)
 
     if not project_dir.exists() or not (project_dir / "dbt_project.yml").exists():
-        logging.warning("dbt project directory not found at %s. Skipping dbt test.", _DBT_PROJECT_DIR)
+        logging.warning("dbt project directory not found at %s. Skipping dbt test.", dbt_project_dir)
         return {"status": "skipped", "reason": "dbt_project_dir_not_found"}
 
     if not dbt_executable:
@@ -278,12 +301,14 @@ def _run_dbt_tests(**context: Any) -> Dict[str, Any]:
         except ImportError:
             pass
 
+    dbt_target = os.environ.get("DBT_TARGET", "dev")
+
     cmd = [
         dbt_executable,
         "test",
-        "--project-dir", _DBT_PROJECT_DIR,
-        "--profiles-dir", _DBT_PROJECT_DIR,
-        "--target", "dev",
+        "--project-dir", dbt_project_dir,
+        "--profiles-dir", dbt_project_dir,
+        "--target", dbt_target,
         "--no-use-colors",
         "--no-partial-parse",
     ]

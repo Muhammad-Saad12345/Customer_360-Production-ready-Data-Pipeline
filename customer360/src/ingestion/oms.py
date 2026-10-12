@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -85,7 +86,8 @@ class OmsIngest(BaseIngest):
             return records
         except Exception as exc:
             env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-            if env in ("prod", "production", "staging", "stage"):
+            allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
+            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                 self.logger.error("OMS ingestion failed in %s environment: %s", env, exc)
                 raise
             self.logger.warning("OMS API failed in %s mode; falling back to synthetic records: %s", env, exc)

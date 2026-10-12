@@ -19,11 +19,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "c360-staging-tfstate"
-    key            = "customer360/staging/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "c360-staging-tflock"
+    bucket  = "c360-staging-tfstate"
+    key     = "customer360/staging/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
   }
 }
 

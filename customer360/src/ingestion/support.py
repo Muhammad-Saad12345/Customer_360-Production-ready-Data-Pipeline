@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -45,9 +46,10 @@ class ZendeskIngest(BaseIngest):
 
     def fetch_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
         env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
+        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
         api_key = self.settings.ZENDESK_API_KEY or self.settings.ZENDESK_SECRET_KEY
         if not api_key or not self.settings.ZENDESK_EMAIL:
-            if env in ("prod", "production", "staging", "stage"):
+            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                 raise ValueError(f"Zendesk credentials missing in {env} environment.")
             return self._synthetic_records(watermark)
 

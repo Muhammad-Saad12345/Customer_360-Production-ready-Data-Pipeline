@@ -5,11 +5,14 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from src.config.secrets import get_secret
 
-load_dotenv()
 logger = logging.getLogger("customer360.config")
 
 
@@ -72,15 +75,15 @@ def get_settings() -> Settings:
     aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
     secret_name = os.getenv("SECRETS_MANAGER_SECRET_NAME", "c_360_secret_manager")
 
-    # Environment-specific defaults
+    # Environment-specific defaults (reconciled with verified live AWS infrastructure)
     if env in ("prod", "production"):
-        default_bucket = "customer360-lakehouse-prod"
-        default_db = "customer360_iceberg"
-        default_wg = "customer360-prod"
+        default_bucket = os.getenv("S3_BUCKET", "c360-bucket786")
+        default_db = os.getenv("ICEBERG_DATABASE", "customer360_iceberg")
+        default_wg = os.getenv("ATHENA_WORKGROUP", "primary")
     elif env in ("staging", "stage"):
-        default_bucket = "c360-bucket786"       # real deployed bucket
-        default_db = "customer360_iceberg_stage"
-        default_wg = "customer360-staging"      # hyphen, matches Terraform resource
+        default_bucket = "c360-bucket786"               # real deployed bucket
+        default_db = "customer360_iceberg_stage"        # isolated live staging database
+        default_wg = "customer360-staging"              # isolated live staging workgroup
     else:  # dev / test
         default_bucket = "customer360-lakehouse-dev"
         default_db = "customer360_iceberg_dev"

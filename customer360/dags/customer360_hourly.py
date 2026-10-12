@@ -1,7 +1,14 @@
-from __future__ import annotations
-
+import sys
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict
+
+# Ensure DAG directory and repository root are in sys.path for MWAA and local compatibility
+_dag_dir = Path(__file__).resolve().parent
+_repo_dir = _dag_dir.parent
+for _p in [str(_dag_dir), str(_repo_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
