@@ -68,9 +68,11 @@ class MarketingIngest(BaseIngest):
             # Mailchimp API keys encode the data-centre as suffix: "<key>-<dc>"
             server_prefix = api_key.split("-")[-1] if api_key and "-" in api_key else None
             env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
+            allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
             if not api_key or not server_prefix or not audience_id:
-                if env in ("prod", "production", "staging", "stage"):
+                if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                     raise ValueError(f"Mailchimp credentials missing in {env} environment.")
+                self.logger.warning("Mailchimp credentials missing in %s mode; using synthetic records.", env)
                 return self._synthetic_records(watermark)
 
             base_url = f"https://{server_prefix}.api.mailchimp.com/3.0"
@@ -100,7 +102,7 @@ class MarketingIngest(BaseIngest):
 
                 return records
             except Exception as exc:
-                if env in ("prod", "production", "staging", "stage"):
+                if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                     self.logger.error("Mailchimp API call failed in %s environment: %s", env, exc)
                     raise
                 self.logger.warning("Mailchimp API failed in %s mode; falling back to synthetic records: %s", env, exc)

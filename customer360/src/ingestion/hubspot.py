@@ -187,11 +187,14 @@ class HubSpotIngest(BaseIngest):
         return deduped
 
     def _synthetic_mode(self) -> bool:
+        import os
         env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-        if env in ("prod", "production", "staging", "stage"):
+        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
+        if env in ("prod", "production"):
+            return False
+        if env in ("staging", "stage") and not allow_synthetic:
             return False
         return self._use_synthetic or not self.token
-
 
     def run(self) -> None:
         url = f"{self.settings.HUBSPOT_BASE_URL}/crm/v3/objects/contacts"
@@ -223,6 +226,22 @@ class HubSpotIngest(BaseIngest):
             page_size=params.get("limit"),
             source_url=url,
         )
+
+        # Short-circuit to synthetic data if no valid token and fallback is permitted.
+        # Avoids a guaranteed 401/timeout before the except block's fallback triggers.
+        if self._synthetic_mode():
+            self.logger.info("HubSpot _synthetic_mode active — using synthetic contact records directly.")
+            results = self._synthetic_contact_records(watermark)
+            deduped_results = self._deduplicate_records(results)
+            if not deduped_results:
+                self.record_metadata(0, 0, "success", url, "")
+                return
+            key = self.persist_raw(deduped_results)
+            latest_watermark = self._latest_record_timestamp(deduped_results, field_names=["lastmodifieddate", "hs_lastmodifieddate"])
+            if latest_watermark:
+                self.update_checkpoint(latest_watermark, run_id=self.run_id)
+            self.record_metadata(len(deduped_results), len(deduped_results), "success", url, key or "")
+            return
 
         results: List[Dict[str, Any]] = []
         page_count = 0

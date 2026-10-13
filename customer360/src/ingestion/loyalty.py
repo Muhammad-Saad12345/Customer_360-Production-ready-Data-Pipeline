@@ -59,6 +59,14 @@ class LoyaltyIngest(BaseIngest):
         return response.json()
 
     def fetch_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
+        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
+
+        _is_local_url = self.base_url.startswith("http://localhost") or self.base_url.startswith("http://127.")
+        if _is_local_url and allow_synthetic:
+            self.logger.info("Loyalty base_url is local (%s) and ALLOW_SYNTHETIC_FALLBACK is enabled — using synthetic records.", self.base_url)
+            return self._synthetic_records(watermark)
+
         try:
             records: List[Dict[str, Any]] = []
             page = 1
@@ -83,8 +91,6 @@ class LoyaltyIngest(BaseIngest):
                 normalized_records.append(record)
             return normalized_records
         except Exception as exc:
-            env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-            allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
             if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                 self.logger.error("Loyalty ingestion failed in %s environment: %s", env, exc)
                 raise

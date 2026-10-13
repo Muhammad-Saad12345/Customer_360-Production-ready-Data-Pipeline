@@ -51,6 +51,7 @@ class ZendeskIngest(BaseIngest):
         if not api_key or not self.settings.ZENDESK_EMAIL:
             if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                 raise ValueError(f"Zendesk credentials missing in {env} environment.")
+            self.logger.warning("Zendesk credentials missing in %s mode; using synthetic records.", env)
             return self._synthetic_records(watermark)
 
         endpoint = f"{self.base_url}incremental/tickets/cursor.json"
@@ -64,7 +65,7 @@ class ZendeskIngest(BaseIngest):
             records = payload.get("tickets", [])
             return [r for r in records if not watermark or (r.get("updated_at") or r.get("created_at") or "1970") >= watermark]
         except Exception as exc:
-            if env in ("prod", "production", "staging", "stage"):
+            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
                 self.logger.error("Zendesk API call failed in %s environment: %s", env, exc)
                 raise
             self.logger.warning("Zendesk API failed in %s mode; falling back to synthetic records: %s", env, exc)
