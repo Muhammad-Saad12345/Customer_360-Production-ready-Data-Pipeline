@@ -9,8 +9,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import boto3
-import pyarrow as pa
-import pyarrow.parquet as pq
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    import subprocess
+    import sys
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow>=14.0.0"])
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except Exception:
+        pa = None
+        pq = None
 
 from src.config.settings import get_settings
 from src.processing.hubspot_processor import HubSpotDataProcessor

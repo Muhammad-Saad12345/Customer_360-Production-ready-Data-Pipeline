@@ -47,19 +47,39 @@ class CheckpointStore:
         elif self.base_dir is not None:
             self.backend = "local"
         else:
-            env = os.getenv("ENVIRONMENT", "dev").lower().strip()
-            if env in ("prod", "production", "staging", "stage"):
+            # Check if running in AWS / MWAA environment
+            is_aws = (
+                bool(os.getenv("AIRFLOW_HOME"))
+                or bool(os.getenv("AWS_EXECUTION_ENV"))
+                or bool(os.getenv("MWAA_AIRFLOW_COMPONENT"))
+                or bool(os.getenv("S3_BUCKET"))
+                or os.getenv("ENVIRONMENT", "").lower().strip() in ("prod", "production", "staging", "stage")
+            )
+            if is_aws:
                 self.backend = "s3"
             else:
                 self.backend = os.getenv("CHECKPOINT_BACKEND", "local").lower()
 
         if self.backend == "local":
             if self.base_dir is None:
-                self.base_dir = Path(__file__).resolve().parent.parent / ".checkpoints"
-            self.base_dir.mkdir(parents=True, exist_ok=True)
+                default_dir = Path(__file__).resolve().parent.parent / ".checkpoints"
+                try:
+                    default_dir.mkdir(parents=True, exist_ok=True)
+                    self.base_dir = default_dir
+                except OSError:
+                    import tempfile
+                    self.base_dir = Path(tempfile.gettempdir()) / ".checkpoints"
+                    self.base_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                try:
+                    self.base_dir.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    import tempfile
+                    self.base_dir = Path(tempfile.gettempdir()) / ".checkpoints"
+                    self.base_dir.mkdir(parents=True, exist_ok=True)
         else:
             if not self._bucket:
-                self._bucket = os.getenv("S3_BUCKET") or "customer360-lakehouse-prod"
+                self._bucket = os.getenv("S3_BUCKET") or os.getenv("MWAA_BUCKET") or "c360-bucket786"
 
     def _get_s3_client(self) -> Any:
         if self._s3_client is not None:

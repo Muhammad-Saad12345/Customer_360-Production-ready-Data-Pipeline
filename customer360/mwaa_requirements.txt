@@ -1,10 +1,10 @@
---constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.11.txt
+--constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.12.txt
 # ─────────────────────────────────────────────────────────────────────────────
 # Customer 360 — MWAA Worker Requirements
 # ─────────────────────────────────────────────────────────────────────────────
 # NOTE: The --constraint URL above MUST be on line 1 with NO quotes (MWAA requirement).
 # Do NOT pin apache-airflow here (MWAA manages its own core Airflow).
-# Tested against: MWAA Airflow 2.11.2, Python 3.11
+# Tested against: MWAA Airflow 2.11.2, Python 3.12
 # ─────────────────────────────────────────────────────────────────────────────
 
 # AWS SDK

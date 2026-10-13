@@ -27,11 +27,21 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("customer360.monitoring")
 
 # Direct import avoids needing the health API server to be running.
-# Results are written to JSONL and the in-memory monitor if available.
-_RUN_LOG = Path(os.environ.get(
-    "C360_RUN_LOG",
-    str(Path(__file__).resolve().parents[2] / "logs" / "pipeline_run_log.jsonl"),
-))
+def _get_run_log_path() -> Path:
+    custom = os.environ.get("C360_RUN_LOG")
+    if custom:
+        return Path(custom)
+    default_path = Path(__file__).resolve().parents[2] / "logs" / "pipeline_run_log.jsonl"
+    try:
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        return default_path
+    except OSError:
+        import tempfile
+        fallback_path = Path(tempfile.gettempdir()) / "logs" / "pipeline_run_log.jsonl"
+        fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        return fallback_path
+
+_RUN_LOG = _get_run_log_path()
 
 # SNS topic ARN for pipeline failure alerts (optional)
 _SNS_ALERT_TOPIC_ARN: Optional[str] = os.environ.get("C360_SNS_ALERT_TOPIC_ARN")

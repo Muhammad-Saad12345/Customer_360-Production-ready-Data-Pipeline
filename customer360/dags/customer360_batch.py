@@ -27,15 +27,30 @@ for _p in [str(_dag_dir), str(_repo_dir)]:
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from src.ingestion.hubspot import HubSpotIngest
-from src.ingestion.loyalty import LoyaltyIngest
-from src.ingestion.marketing import MarketingIngest
-from src.ingestion.oms import OmsIngest
-from src.ingestion.pim import PimIngest
-from src.ingestion.support import ZendeskIngest
-from src.lakehouse.iceberg_loader import IcebergLoader
 from src.monitoring.airflow_callbacks import on_task_failure, on_task_success
-from src.processing.silver_gate import HubSpotSilverProcessor
+
+
+def _get_ingester(source: str):
+    """Lazy factory to load ingester classes only when tasks execute."""
+    if source == "hubspot":
+        from src.ingestion.hubspot import HubSpotIngest
+        return HubSpotIngest()
+    elif source == "oms":
+        from src.ingestion.oms import OmsIngest
+        return OmsIngest()
+    elif source == "pim":
+        from src.ingestion.pim import PimIngest
+        return PimIngest()
+    elif source == "loyalty":
+        from src.ingestion.loyalty import LoyaltyIngest
+        return LoyaltyIngest()
+    elif source == "marketing":
+        from src.ingestion.marketing import MarketingIngest
+        return MarketingIngest()
+    elif source in ("support", "zendesk"):
+        from src.ingestion.support import ZendeskIngest
+        return ZendeskIngest()
+    raise ValueError(f"Unknown source: {source}")
 
 
 def _source_metadata(source: str, entity: str, run_id: str, status: str = "success", **extra: Any) -> Dict[str, Any]:
@@ -49,8 +64,11 @@ def _source_metadata(source: str, entity: str, run_id: str, status: str = "succe
     return payload
 
 
-def _ingest_and_return(ingest_callable, source: str, entity: str, **context: Any) -> Dict[str, Any]:
-    ingester = ingest_callable()
+def _ingest_and_return(source: str, entity: str, ingester_factory=None, **context: Any) -> Dict[str, Any]:
+    if callable(ingester_factory):
+        ingester = ingester_factory()
+    else:
+        ingester = _get_ingester(source)
     ingester.run()
     return _source_metadata(source, entity, ingester.run_id)
 
@@ -59,6 +77,8 @@ def _ingest_hubspot(source: str = "hubspot", entity: str = "contacts", **context
     # HubSpot is CONTACTS ONLY.
     # Orders are owned by OMS. Products are owned by PIM.
     # Do NOT call run_orders() or run_products() here.
+    from src.ingestion.hubspot import HubSpotIngest
+
     hubspot = HubSpotIngest()
     hubspot.run()
     return _source_metadata(source, entity, hubspot.run_id)
@@ -73,6 +93,8 @@ def _silver_gate(source: str, entity: str, **context: Any) -> Dict[str, Any]:
     run_id = upstream.get("run_id")
     if not run_id:
         raise ValueError(f"No run_id available for {source}/{entity}")
+
+    from src.processing.silver_gate import HubSpotSilverProcessor
 
     processor = HubSpotSilverProcessor()
     summary = processor.process_records(source=source, entity=entity, run_id=run_id)
@@ -192,6 +214,8 @@ def _load_iceberg_gate(source: str, entity: str, **context: Any) -> Dict[str, An
             "status": "skipped",
             "reason": "zero_valid_records",
         }
+
+    from src.lakehouse.iceberg_loader import IcebergLoader
 
     loader = IcebergLoader()
     summary = loader.load_silver_run(source=source, entity=entity, run_id=run_id)
@@ -345,10 +369,10 @@ def _run_iceberg_maintenance(**context: Any) -> Dict[str, Any]:
     return {"status": "complete", "tables": results}
 
 
-def _build_task(task_id: str, source: str, entity: str, ingester_factory):
+def _build_task(task_id: str, source: str, entity: str, ingester_factory=None):
     ingest_task = PythonOperator(
         task_id=f"ingest_{source}",
-        python_callable=lambda ingester_factory=ingester_factory, source=source, entity=entity, **context: _ingest_and_return(ingester_factory, source, entity, **context),
+        python_callable=lambda source=source, entity=entity, ingester_factory=ingester_factory, **context: _ingest_and_return(source, entity, ingester_factory, **context),
         provide_context=True,
         retries=2,
         retry_delay=timedelta(minutes=2),
@@ -418,7 +442,7 @@ with DAG(
 
     oms_ingest = PythonOperator(
         task_id="ingest_oms",
-        python_callable=lambda **context: _ingest_and_return(lambda: OmsIngest(), "oms", "orders", **context),
+        python_callable=lambda **context: _ingest_and_return("oms", "orders", **context),
         provide_context=True,
         retries=2,
         retry_delay=timedelta(minutes=2),
@@ -443,7 +467,7 @@ with DAG(
 
     pim_ingest = PythonOperator(
         task_id="ingest_pim",
-        python_callable=lambda **context: _ingest_and_return(lambda: PimIngest(), "pim", "products", **context),
+        python_callable=lambda **context: _ingest_and_return("pim", "products", **context),
         provide_context=True,
         retries=2,
         retry_delay=timedelta(minutes=2),
@@ -468,7 +492,7 @@ with DAG(
 
     loyalty_ingest = PythonOperator(
         task_id="ingest_loyalty",
-        python_callable=lambda **context: _ingest_and_return(lambda: LoyaltyIngest(), "loyalty", "loyalty", **context),
+        python_callable=lambda **context: _ingest_and_return("loyalty", "loyalty", **context),
         provide_context=True,
         retries=2,
         retry_delay=timedelta(minutes=2),
@@ -524,7 +548,7 @@ with DAG(
         execution_timeout=timedelta(minutes=15),
     )
 
-    marketing_ingest, marketing_validate, marketing_quality = _build_task("marketing", "marketing", "campaign_events", lambda: MarketingIngest())
+    marketing_ingest, marketing_validate, marketing_quality = _build_task("marketing", "marketing", "campaign_events")
     marketing_iceberg = PythonOperator(
         task_id="load_iceberg_marketing",
         python_callable=lambda **context: _load_iceberg_gate("marketing", "campaign_events", **context),
@@ -535,7 +559,7 @@ with DAG(
     )
     zendesk_ingest = PythonOperator(
         task_id="ingest_zendesk",
-        python_callable=lambda **context: _ingest_and_return(lambda: ZendeskIngest(), "support", "tickets", **context),
+        python_callable=lambda **context: _ingest_and_return("support", "tickets", **context),
         provide_context=True,
         retries=1,
         retry_delay=timedelta(minutes=2),

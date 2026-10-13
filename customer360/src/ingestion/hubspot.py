@@ -257,12 +257,11 @@ class HubSpotIngest(BaseIngest):
                 after = next_token
         except Exception as exc:
             env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-            if env in ("prod", "production", "staging", "stage"):
+            allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
+            if env in ("prod", "production") or (env in ("staging", "stage") and not allow_synthetic):
                 self.logger.error("HubSpot API failed in %s environment: %s", env, exc)
                 raise
-            if not self._synthetic_mode():
-                raise
-            self.logger.warning("HubSpot API unavailable; falling back to synthetic contacts for local development.")
+            self.logger.warning("HubSpot API unavailable; falling back to synthetic contacts.")
             results = self._synthetic_contact_records(watermark)
 
         deduped_results = self._deduplicate_records(results)

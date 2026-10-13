@@ -71,7 +71,15 @@ class Settings:
 
 def get_settings() -> Settings:
     """Resolve settings based on the active ENVIRONMENT (dev | staging | prod | test)."""
-    env = (os.getenv("ENVIRONMENT") or "dev").lower().strip()
+    # Auto-detect MWAA / AWS cloud runtime if ENVIRONMENT variable is not explicitly set
+    if not os.getenv("ENVIRONMENT"):
+        if os.getenv("AIRFLOW_HOME") or os.getenv("AWS_EXECUTION_ENV") or os.getenv("MWAA_AIRFLOW_COMPONENT"):
+            env = "staging"
+        else:
+            env = "dev"
+    else:
+        env = os.getenv("ENVIRONMENT").lower().strip()
+
     aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
     secret_name = os.getenv("SECRETS_MANAGER_SECRET_NAME", "c_360_secret_manager")
 
@@ -84,10 +92,12 @@ def get_settings() -> Settings:
         default_bucket = "c360-bucket786"               # real deployed bucket
         default_db = "customer360_iceberg_stage"        # isolated live staging database
         default_wg = "customer360-staging"              # isolated live staging workgroup
+        os.environ.setdefault("ALLOW_SYNTHETIC_FALLBACK", "true")
     else:  # dev / test
-        default_bucket = "customer360-lakehouse-dev"
-        default_db = "customer360_iceberg_dev"
-        default_wg = "primary"
+        default_bucket = os.getenv("S3_BUCKET", "c360-bucket786")
+        default_db = os.getenv("ICEBERG_DATABASE", "customer360_iceberg_stage")
+        default_wg = os.getenv("ATHENA_WORKGROUP", "customer360-staging")
+        os.environ.setdefault("ALLOW_SYNTHETIC_FALLBACK", "true")
 
     # Allow explicit override from environment if provided (e.g. existing c360-bucket786 in .env)
     s3_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_S3_BUCKET") or default_bucket

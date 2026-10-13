@@ -13,16 +13,14 @@ for _p in [str(_dag_dir), str(_repo_dir)]:
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from src.ingestion.hubspot import HubSpotIngest
-from src.processing.silver_gate import HubSpotSilverProcessor
-from src.lakehouse.iceberg_loader import IcebergLoader
-
 
 def _ingest_hubspot_hourly(**context: Any) -> Dict[str, Any]:
     """
     Incremental hourly HubSpot customer contact ingestion.
     HubSpot is CONTACTS ONLY. Orders are owned by OMS; Products are owned by PIM.
     """
+    from src.ingestion.hubspot import HubSpotIngest
+
     hubspot = HubSpotIngest()
     hubspot.run()
     return {
@@ -35,9 +33,18 @@ def _ingest_hubspot_hourly(**context: Any) -> Dict[str, Any]:
 
 def _silver_gate_hourly(**context: Any) -> Dict[str, Any]:
     """Validate raw records and write clean Silver Parquet; route bad records to quarantine."""
+    from src.processing.silver_gate import HubSpotSilverProcessor
+
     ti = context["ti"]
     upstream = ti.xcom_pull(task_ids="ingest_hubspot") or {}
     run_id = upstream.get("run_id")
+    if not run_id:
+        try:
+            from src.checkpoint import CheckpointStore
+            cp = CheckpointStore()
+            run_id = cp.get_last_checkpoint("hubspot", "contacts")
+        except Exception:
+            run_id = None
     if not run_id:
         raise ValueError("No run_id available from upstream ingest_hubspot task")
 
@@ -88,8 +95,13 @@ def _load_iceberg_hourly(**context: Any) -> Dict[str, Any]:
     ti = context["ti"]
     upstream = ti.xcom_pull(task_ids="quality_check_hubspot") or {}
     run_id = upstream.get("run_id")
-    valid_count = int(upstream.get("valid_count") or 0)
-
+    if not run_id:
+        try:
+            from src.checkpoint import CheckpointStore
+            cp = CheckpointStore()
+            run_id = cp.get_last_checkpoint("hubspot", "contacts")
+        except Exception:
+            run_id = None
     if not run_id:
         raise ValueError("No run_id available for Iceberg load of hubspot/contacts")
 
@@ -101,6 +113,8 @@ def _load_iceberg_hourly(**context: Any) -> Dict[str, Any]:
             "status": "skipped",
             "reason": "zero_valid_records",
         }
+
+    from src.lakehouse.iceberg_loader import IcebergLoader
 
     loader = IcebergLoader()
     summary = loader.load_silver_run(source="hubspot", entity="contacts", run_id=run_id)

@@ -6,8 +6,19 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import boto3
-import pyarrow as pa
-import pyarrow.parquet as pq
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    import subprocess
+    import sys
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow>=14.0.0"])
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except Exception:
+        pa = None
+        pq = None
 from botocore.exceptions import ClientError
 
 from src.lakehouse.athena_client import AthenaClient
