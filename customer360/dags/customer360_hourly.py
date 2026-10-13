@@ -105,6 +105,7 @@ def _load_iceberg_hourly(**context: Any) -> Dict[str, Any]:
     if not run_id:
         raise ValueError("No run_id available for Iceberg load of hubspot/contacts")
 
+    valid_count = int(upstream.get("valid_count") or 0)
     if valid_count == 0:
         return {
             "source": "hubspot",
