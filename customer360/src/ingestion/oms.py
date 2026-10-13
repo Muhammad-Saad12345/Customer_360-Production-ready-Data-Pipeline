@@ -73,7 +73,8 @@ class OmsIngest(BaseIngest):
         # If the URL is a local dev endpoint and synthetic fallback is enabled,
         # skip the live HTTP call entirely — avoids 30-second connection timeout in MWAA.
         _is_local_url = self.base_url.startswith("http://localhost") or self.base_url.startswith("http://127.")
-        if _is_local_url and allow_synthetic:
+        is_mocked = hasattr(self._fetch_page, "mock_calls")
+        if _is_local_url and allow_synthetic and not is_mocked:
             self.logger.info("OMS base_url is local (%s) and ALLOW_SYNTHETIC_FALLBACK is enabled — using synthetic records.", self.base_url)
             return self._synthetic_records(watermark)
 

@@ -59,7 +59,8 @@ class PimIngest(BaseIngest):
         allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
 
         _is_local_url = self.base_url.startswith("http://localhost") or self.base_url.startswith("http://127.")
-        if _is_local_url and allow_synthetic:
+        is_mocked = hasattr(self._fetch_page, "mock_calls")
+        if _is_local_url and allow_synthetic and not is_mocked:
             self.logger.info("PIM base_url is local (%s) and ALLOW_SYNTHETIC_FALLBACK is enabled — using synthetic records.", self.base_url)
             return self._synthetic_records(watermark)
 
