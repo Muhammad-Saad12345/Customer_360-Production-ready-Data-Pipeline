@@ -1,8 +1,8 @@
---constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.11.txt"
+--constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.11.txt
 # ─────────────────────────────────────────────────────────────────────────────
 # Customer 360 — MWAA Worker Requirements
 # ─────────────────────────────────────────────────────────────────────────────
-# NOTE: The --constraint line above MUST remain on line 1 (mandatory for MWAA).
+# NOTE: The --constraint URL above MUST be on line 1 with NO quotes (MWAA requirement).
 # Do NOT pin apache-airflow here (MWAA manages its own core Airflow).
 # Tested against: MWAA Airflow 2.11.2, Python 3.11
 # ─────────────────────────────────────────────────────────────────────────────
@@ -16,15 +16,13 @@ requests>=2.31.0,<3.0.0
 # Environment / config
 python-dotenv>=1.0.0,<2.0.0
 
-# Retry logic
+# Retry logic (pinned to Airflow 2.11.2 constraint: tenacity==9.1.4)
 tenacity>=8.2.0
 
 # Parquet serialization (silver gate, Iceberg staging)
+# Constrained by Airflow 2.11.2 to: pyarrow==18.1.0
 pyarrow>=14.0.0
 
-# Note: dbt-athena-community pins mmh3<4.2.0 and tenacity<8.3 which directly conflicts
-# with Airflow 2.11.2 constraints (mmh3==5.2.1, tenacity==9.1.4), causing pip to crash.
-# DAG transformations run via Athena CTAS / IcebergLoader or containerized dbt runners.
-
 # Airflow Amazon provider (Secrets Manager backend, S3, etc.)
+# Constrained by Airflow 2.11.2 to: apache-airflow-providers-amazon==9.22.0
 apache-airflow-providers-amazon>=8.0.0
