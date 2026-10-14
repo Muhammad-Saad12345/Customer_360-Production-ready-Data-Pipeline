@@ -88,7 +88,7 @@ uv run python src/main.py iceberg-load
 # Live S3 Acceptance Check
 uv run python scripts/live_acceptance_check.py
 
-# Full test suite (142 unit and integration tests)
+# Full test suite (211 unit and integration tests)
 uv run pytest
 ```
 
@@ -107,14 +107,23 @@ docker compose up -d
 # Username: admin
 # Password: admin
 
-# 3. Trigger the 4-tier DAG
-# Unpause and trigger: customer360_hourly_ingestion
+# 3. Trigger the DAGs
+# Unpause and trigger: customer360_healthcheck, customer360_hourly, or customer360_batch
 ```
 
 ---
 
-## 5. Documentation Directory
+## 5. Authoritative Documentation Suite
 
-- **[AIRFLOW_ARCHITECTURE.md](docs/AIRFLOW_ARCHITECTURE.md)**: Deep dive into DAG topology, task responsibilities, container networking, and AWS MWAA migration.
-- **[ICEBERG_LAKEHOUSE.md](docs/ICEBERG_LAKEHOUSE.md)**: Detailed Iceberg lakehouse architecture, Athena Engine v3 inline VALUES MERGE, Glue schema evolution, table schemas, and snapshot maintenance.
-- **[AIRFLOW_RUNBOOK.md](docs/AIRFLOW_RUNBOOK.md)**: Operational runbook and troubleshooting procedures.
+The complete engineering documentation is organized under the [`docs/`](docs/) directory:
+
+- **[Integration Baseline](docs/integration_baseline.md)**: System baseline, architectural inventory, source ownership matrix, S3 layout, Iceberg tables, and dbt models.
+- **[Pipeline Flow Explained](docs/pipeline_flow_explained.md)**: Beginner-to-architect walkthrough of the end-to-end data lifecycle across all 4 tiers and dbt marts.
+- **[Architecture & Component Status](docs/architecture_and_component_status.md)**: Subsystem status matrix with `COMPLETE`, `PARTIAL`, `BLOCKED`, and `NOT IMPLEMENTED` ratings.
+- **[Incident Root Cause Analysis (RCA)](docs/incident_root_cause_analysis.md)**: Post-mortem of all prior MWAA failures, packaging issues, and code remediations.
+- **[AWS Service Health Audit](docs/aws_service_health.md)**: Cloud infrastructure audit covering MWAA, S3, Glue Data Catalog, Athena Engine v3, CloudWatch, and IAM roles.
+- **[Production Readiness Assessment](docs/production_readiness.md)**: 12-pillar scorecard, staging approval verdict, and production cutover checklist.
+- **[Deployment & Operations Runbook](docs/deployment_runbook.md)**: Operational instructions for S3 synchronization, MWAA deployment, Athena verification queries, and incident triage.
+- **[Test Results Report](docs/test_results.md)**: Comprehensive breakdown of the 211 automated tests passing across 15 test suites.
+- **[Next Steps Roadmap](docs/next_steps_roadmap.md)**: Prioritized engineering roadmap spanning immediate staging runs to production cutover and BI dashboards.
+- **[Engineering Handover](docs/antigravity_handover.md)**: Master handover guide covering repository map, CLI commands, gotchas, and defect history.
