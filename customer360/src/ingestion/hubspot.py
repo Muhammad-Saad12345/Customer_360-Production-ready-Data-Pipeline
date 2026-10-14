@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 
 import requests
 from typing import Iterable, List, Dict, Any, Optional
@@ -187,7 +188,6 @@ class HubSpotIngest(BaseIngest):
         return deduped
 
     def _synthetic_mode(self) -> bool:
-        import os
         env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
         allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
         if env in ("prod", "production"):
