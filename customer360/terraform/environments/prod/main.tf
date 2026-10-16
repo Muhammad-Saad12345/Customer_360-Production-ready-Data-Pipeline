@@ -78,26 +78,60 @@ module "observability" {
   task_failure_alarm_threshold      = 1
 }
 
-module "mwaa" {
-  source       = "../../modules/mwaa"
-  environment  = var.environment
-  project_name = "c360"
-  aws_region   = var.aws_region
-  tags         = local.common_tags
-
-  mwaa_dags_bucket_name       = module.core.mwaa_dags_bucket_name
-  pipeline_execution_role_arn = module.iam.pipeline_execution_role_arn
-  kms_key_arn                 = module.core.kms_key_arn
-  vpc_id                      = var.vpc_id
-  private_subnet_ids          = var.private_subnet_ids
-
-  airflow_version   = "2.9.2"
-  environment_class = "mw1.large"   # production-grade sizing
-  min_workers       = 2
-  max_workers       = 8
+module "lambda" {
+  source                = "../../modules/lambda"
+  environment           = var.environment
+  project_name          = "c360"
+  lakehouse_bucket_name = module.core.lakehouse_bucket_name
+  lakehouse_bucket_arn  = module.core.lakehouse_bucket_arn
+  glue_database_name    = module.core.glue_database_name
+  athena_workgroup_name = module.core.athena_workgroup_name
+  sns_topic_arn         = module.observability.sns_alert_topic_arn
+  kms_key_arn           = module.core.kms_key_arn
+  tags                  = local.common_tags
 }
 
-output "lakehouse_bucket" { value = module.core.lakehouse_bucket_name }
-output "mwaa_url"         { value = module.mwaa.mwaa_webserver_url }
-output "sns_topic_arn"    { value = module.observability.sns_alert_topic_arn }
-output "deploy_role_arn"  { value = module.iam.github_deploy_role_arn }
+module "glue_jobs" {
+  source                = "../../modules/glue_jobs"
+  environment           = var.environment
+  project_name          = "c360"
+  lakehouse_bucket_name = module.core.lakehouse_bucket_name
+  lakehouse_bucket_arn  = module.core.lakehouse_bucket_arn
+  artifacts_bucket_name = module.core.artifacts_bucket_name
+  artifacts_bucket_arn  = module.core.artifacts_bucket_arn
+  glue_database_name    = module.core.glue_database_name
+  athena_workgroup_name = module.core.athena_workgroup_name
+  kms_key_arn           = module.core.kms_key_arn
+  tags                  = local.common_tags
+}
+
+module "step_functions" {
+  source            = "../../modules/step_functions"
+  environment       = var.environment
+  project_name      = "c360"
+  lambda_arns       = module.lambda.function_arns
+  glue_dbt_job_name = module.glue_jobs.job_name
+  glue_dbt_job_arn  = module.glue_jobs.job_arn
+  s3_dbt_path       = "s3://${module.core.artifacts_bucket_name}/artifacts/dbt/dbt_project.tar.gz"
+  tags              = local.common_tags
+}
+
+module "eventbridge" {
+  source              = "../../modules/eventbridge"
+  environment         = var.environment
+  project_name        = "c360"
+  state_machine_arn   = module.step_functions.state_machine_arn
+  schedule_expression = "cron(0 2 * * ? *)" # Daily 02:00 UTC
+  schedule_enabled    = true
+  tags                = local.common_tags
+}
+
+output "lakehouse_bucket"                  { value = module.core.lakehouse_bucket_name }
+output "artifacts_bucket"                  { value = module.core.artifacts_bucket_name }
+output "sns_topic_arn"                     { value = module.observability.sns_alert_topic_arn }
+output "deploy_role_arn"                   { value = module.iam.github_deploy_role_arn }
+output "step_functions_state_machine_arn"  { value = module.step_functions.state_machine_arn }
+output "step_functions_state_machine_name" { value = module.step_functions.state_machine_name }
+output "glue_dbt_job_name"                 { value = module.glue_jobs.job_name }
+output "eventbridge_schedule_arn"          { value = module.eventbridge.schedule_arn }
+

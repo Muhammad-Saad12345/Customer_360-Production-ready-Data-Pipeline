@@ -1,12 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Customer 360 — Staging Environment Root Configuration
-#
-# IMPORTANT: Several AWS resources already exist (MWAA, S3 buckets, IAM roles,
-# security group). This configuration IMPORTS those resources and only creates
-# what is genuinely missing (Glue DB, Athena workgroup, SNS topic, CloudWatch
-# alarms, log groups).
-#
-# DO NOT run terraform apply without first running: ./scripts/tf_import_staging.sh
+# Architecture: Step Functions + Lambda + Glue + Athena + EventBridge
+# (MWAA has been retired to optimize cost from ~$350/mo to ~$20/mo)
 # ─────────────────────────────────────────────────────────────────────────────
 
 terraform {
@@ -57,36 +52,21 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data sources — reference pre-existing AWS resources (do NOT recreate)
+# Data Sources — Verified Live Resources
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Existing S3 lakehouse bucket
+# Verified live S3 lakehouse bucket
 data "aws_s3_bucket" "lakehouse" {
   bucket = "c360-bucket786"
 }
 
-# Existing S3 MWAA DAGs bucket
-data "aws_s3_bucket" "mwaa_dags" {
-  bucket = "c360-mwaa-prod-786"
-}
-
-# Existing MWAA execution role
-data "aws_iam_role" "mwaa_execution" {
-  name = "C360-MWAA-Execution-Role"
-}
-
-# Existing GitHub deploy role
+# Existing GitHub deploy role (for CI/CD OIDC)
 data "aws_iam_role" "github_deploy" {
   name = "github-mwaa-deploy-role"
 }
 
-# Existing MWAA security group
-data "aws_security_group" "mwaa" {
-  id = "sg-0a65f661ef6fd310b"
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Glue Data Catalog Database (create if not already present)
+# Glue Data Catalog Database
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_glue_catalog_database" "customer360_staging" {
@@ -102,7 +82,7 @@ resource "aws_glue_catalog_database" "customer360_staging" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Athena Workgroup (create if not already present)
+# Athena Workgroup
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_athena_workgroup" "customer360_staging" {
@@ -142,41 +122,69 @@ resource "aws_sns_topic_subscription" "email" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CloudWatch Log Groups — MWAA (5 log types, 30-day retention)
+# Modules: Lambda Functions (8 Specialized Pipeline Handlers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_cloudwatch_log_group" "mwaa_dag_processing" {
-  name              = "/customer360/staging/mwaa/dag-processing"
-  retention_in_days = 30
-  tags              = local.common_tags
-}
-
-resource "aws_cloudwatch_log_group" "mwaa_scheduler" {
-  name              = "/customer360/staging/mwaa/scheduler"
-  retention_in_days = 30
-  tags              = local.common_tags
-}
-
-resource "aws_cloudwatch_log_group" "mwaa_task" {
-  name              = "/customer360/staging/mwaa/task"
-  retention_in_days = 30
-  tags              = local.common_tags
-}
-
-resource "aws_cloudwatch_log_group" "mwaa_webserver" {
-  name              = "/customer360/staging/mwaa/webserver"
-  retention_in_days = 14
-  tags              = local.common_tags
-}
-
-resource "aws_cloudwatch_log_group" "mwaa_worker" {
-  name              = "/customer360/staging/mwaa/worker"
-  retention_in_days = 30
-  tags              = local.common_tags
+module "lambda" {
+  source                = "../../modules/lambda"
+  environment           = var.environment
+  project_name          = "c360"
+  lakehouse_bucket_name = data.aws_s3_bucket.lakehouse.bucket
+  lakehouse_bucket_arn  = data.aws_s3_bucket.lakehouse.arn
+  glue_database_name    = aws_glue_catalog_database.customer360_staging.name
+  athena_workgroup_name = aws_athena_workgroup.customer360_staging.name
+  sns_topic_arn         = aws_sns_topic.pipeline_alerts.arn
+  tags                  = local.common_tags
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CloudWatch Alarms — Data Quality
+# Modules: Glue Job (dbt Runner on Python Shell)
+# ─────────────────────────────────────────────────────────────────────────────
+
+module "glue_jobs" {
+  source                = "../../modules/glue_jobs"
+  environment           = var.environment
+  project_name          = "c360"
+  lakehouse_bucket_name = data.aws_s3_bucket.lakehouse.bucket
+  lakehouse_bucket_arn  = data.aws_s3_bucket.lakehouse.arn
+  artifacts_bucket_name = data.aws_s3_bucket.lakehouse.bucket
+  artifacts_bucket_arn  = data.aws_s3_bucket.lakehouse.arn
+  glue_database_name    = aws_glue_catalog_database.customer360_staging.name
+  athena_workgroup_name = aws_athena_workgroup.customer360_staging.name
+  tags                  = local.common_tags
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Modules: Step Functions (End-to-End Batch Orchestration)
+# ─────────────────────────────────────────────────────────────────────────────
+
+module "step_functions" {
+  source            = "../../modules/step_functions"
+  environment       = var.environment
+  project_name      = "c360"
+  lambda_arns       = module.lambda.function_arns
+  glue_dbt_job_name = module.glue_jobs.job_name
+  glue_dbt_job_arn  = module.glue_jobs.job_arn
+  s3_dbt_path       = "s3://${data.aws_s3_bucket.lakehouse.bucket}/artifacts/dbt/dbt_project.tar.gz"
+  tags              = local.common_tags
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Modules: EventBridge Scheduler (Daily Trigger)
+# ─────────────────────────────────────────────────────────────────────────────
+
+module "eventbridge" {
+  source              = "../../modules/eventbridge"
+  environment         = var.environment
+  project_name        = "c360"
+  state_machine_arn   = module.step_functions.state_machine_arn
+  schedule_expression = "cron(0 2 * * ? *)" # Daily at 02:00 UTC
+  schedule_enabled    = true
+  tags                = local.common_tags
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CloudWatch Alarms — Pipeline Health & Data Quality
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "dq_gate_failed" {
@@ -256,8 +264,8 @@ resource "aws_cloudwatch_dashboard" "customer360_staging" {
         properties = {
           title   = "Task Outcomes"
           metrics = [
-            ["Customer360/Pipeline", "TaskSuccess", "Environment", "staging", { stat = "Sum", period = 300, color = "#2ca02c" }],
-            ["Customer360/Pipeline", "TaskFailure", "Environment", "staging", { stat = "Sum", period = 300, color = "#d62728" }]
+            ["Customer360/Pipeline", "TaskSuccess", "Environment", "staging", { stat = "Sum", period = 300, color = "#1f77b4" }],
+            ["Customer360/Pipeline", "TaskFailure", "Environment", "staging", { stat = "Sum", period = 300, color = "#ff7f0e" }]
           ]
           view   = "timeSeries"
           region = "us-east-1"
@@ -265,129 +273,34 @@ resource "aws_cloudwatch_dashboard" "customer360_staging" {
       },
       {
         type   = "metric"
-        x = 0; y = 6; width = 24; height = 6
+        x = 0; y = 6; width = 12; height = 6
         properties = {
-          title   = "Record Counts"
+          title   = "DQ Rejection Rate by Source (%)"
           metrics = [
-            ["Customer360/Pipeline", "InputRecordCount",   "Environment", "staging", { stat = "Sum", period = 300 }],
-            ["Customer360/Pipeline", "ValidRecordCount",   "Environment", "staging", { stat = "Sum", period = 300, color = "#2ca02c" }],
-            ["Customer360/Pipeline", "InvalidRecordCount", "Environment", "staging", { stat = "Sum", period = 300, color = "#ff7f0e" }]
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "hubspot", { stat = "Maximum", period = 300 }],
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "oms", { stat = "Maximum", period = 300 }],
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "pim", { stat = "Maximum", period = 300 }],
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "loyalty", { stat = "Maximum", period = 300 }],
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "marketing", { stat = "Maximum", period = 300 }],
+            ["Customer360/Pipeline", "RejectionRate", "Environment", "staging", "Source", "support", { stat = "Maximum", period = 300 }]
+          ]
+          view    = "timeSeries"
+          region  = "us-east-1"
+          yAxis   = { left = { min = 0, max = 100 } }
+        }
+      },
+      {
+        type   = "metric"
+        x = 12; y = 6; width = 12; height = 6
+        properties = {
+          title   = "Record Throughput (Valid vs Invalid)"
+          metrics = [
+            ["Customer360/Pipeline", "ValidRecordCount", "Environment", "staging", { stat = "Sum", period = 300, color = "#2ca02c" }],
+            ["Customer360/Pipeline", "InvalidRecordCount", "Environment", "staging", { stat = "Sum", period = 300, color = "#d62728" }]
           ]
           view   = "timeSeries"
           region = "us-east-1"
         }
-      }
-    ]
-  })
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# IAM — inline policy additions to EXISTING MWAA execution role
-# Adds: secretsmanager, sns, cloudwatch — if not already present
-# ─────────────────────────────────────────────────────────────────────────────
-
-resource "aws_iam_role_policy" "mwaa_secrets" {
-  name = "c360-staging-secrets-access"
-  role = data.aws_iam_role.mwaa_execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "SecretsManagerRead"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = [
-          "arn:aws:secretsmanager:us-east-1:${local.account_id}:secret:c_360_secret_manager*"
-        ]
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "mwaa_cloudwatch" {
-  name = "c360-staging-cloudwatch-metrics"
-  role = data.aws_iam_role.mwaa_execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "CloudWatchMetrics"
-        Effect = "Allow"
-        Action = ["cloudwatch:PutMetricData"]
-        Resource = ["*"]
-        Condition = {
-          StringEquals = { "cloudwatch:namespace" = "Customer360/Pipeline" }
-        }
-      },
-      {
-        Sid    = "CloudWatchLogs"
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup", "logs:CreateLogStream",
-          "logs:PutLogEvents", "logs:DescribeLogStreams"
-        ]
-        Resource = [
-          "arn:aws:logs:us-east-1:${local.account_id}:log-group:/customer360/*"
-        ]
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "mwaa_sns" {
-  name = "c360-staging-sns-publish"
-  role = data.aws_iam_role.mwaa_execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "SNSPublish"
-        Effect   = "Allow"
-        Action   = ["sns:Publish"]
-        Resource = [aws_sns_topic.pipeline_alerts.arn]
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "mwaa_glue" {
-  name = "c360-staging-glue-athena"
-  role = data.aws_iam_role.mwaa_execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "GlueCatalog"
-        Effect = "Allow"
-        Action = [
-          "glue:GetDatabase", "glue:GetDatabases",
-          "glue:GetTable", "glue:GetTables",
-          "glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable",
-          "glue:GetPartition", "glue:GetPartitions",
-          "glue:CreatePartition", "glue:BatchCreatePartition",
-          "glue:UpdatePartition", "glue:DeletePartition"
-        ]
-        Resource = [
-          "arn:aws:glue:us-east-1:${local.account_id}:catalog",
-          "arn:aws:glue:us-east-1:${local.account_id}:database/customer360_iceberg_stage",
-          "arn:aws:glue:us-east-1:${local.account_id}:table/customer360_iceberg_stage/*"
-        ]
-      },
-      {
-        Sid    = "AthenaAccess"
-        Effect = "Allow"
-        Action = [
-          "athena:StartQueryExecution", "athena:StopQueryExecution",
-          "athena:GetQueryExecution", "athena:GetQueryResults",
-          "athena:GetWorkGroup", "athena:ListQueryExecutions"
-        ]
-        Resource = [
-          "arn:aws:athena:us-east-1:${local.account_id}:workgroup/customer360-staging"
-        ]
       }
     ]
   })
@@ -397,10 +310,13 @@ resource "aws_iam_role_policy" "mwaa_glue" {
 # Outputs
 # ─────────────────────────────────────────────────────────────────────────────
 
-output "lakehouse_bucket"        { value = data.aws_s3_bucket.lakehouse.bucket }
-output "mwaa_dags_bucket"        { value = data.aws_s3_bucket.mwaa_dags.bucket }
-output "glue_database"           { value = aws_glue_catalog_database.customer360_staging.name }
-output "athena_workgroup"        { value = aws_athena_workgroup.customer360_staging.name }
-output "sns_topic_arn"           { value = aws_sns_topic.pipeline_alerts.arn }
-output "mwaa_execution_role_arn" { value = data.aws_iam_role.mwaa_execution.arn }
-output "github_deploy_role_arn"  { value = data.aws_iam_role.github_deploy.arn }
+output "lakehouse_bucket"                   { value = data.aws_s3_bucket.lakehouse.bucket }
+output "glue_database"                      { value = aws_glue_catalog_database.customer360_staging.name }
+output "athena_workgroup"                   { value = aws_athena_workgroup.customer360_staging.name }
+output "sns_topic_arn"                      { value = aws_sns_topic.pipeline_alerts.arn }
+output "step_functions_state_machine_arn"   { value = module.step_functions.state_machine_arn }
+output "step_functions_state_machine_name"  { value = module.step_functions.state_machine_name }
+output "glue_dbt_job_name"                  { value = module.glue_jobs.job_name }
+output "eventbridge_schedule_arn"           { value = module.eventbridge.schedule_arn }
+output "lambda_function_arns"               { value = module.lambda.function_arns }
+output "github_deploy_role_arn"             { value = data.aws_iam_role.github_deploy.arn }

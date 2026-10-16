@@ -14,7 +14,8 @@ variable "lakehouse_bucket_arn" {
   type = string
 }
 variable "mwaa_dags_bucket_arn" {
-  type = string
+  type    = string
+  default = ""
 }
 variable "kms_key_arn" {
   type = string
@@ -51,7 +52,7 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pipeline Execution Role (used by MWAA workers / Lambda / ECS tasks)
+# Pipeline Execution Role (assumed by Lambda, Step Functions, Glue)
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "pipeline_execution" {
@@ -62,7 +63,13 @@ resource "aws_iam_role" "pipeline_execution" {
     Statement = [
       {
         Effect    = "Allow"
-        Principal = { Service = "airflow.amazonaws.com" }
+        Principal = {
+          Service = [
+            "lambda.amazonaws.com",
+            "states.amazonaws.com",
+            "glue.amazonaws.com"
+          ]
+        }
         Action    = "sts:AssumeRole"
       }
     ]
@@ -77,30 +84,34 @@ resource "aws_iam_policy" "pipeline_s3" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "LakehouseBucketAccess"
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-          "s3:ListBucket", "s3:GetBucketLocation",
-          "s3:GetObjectVersion"
-        ]
-        Resource = [
-          var.lakehouse_bucket_arn,
-          "${var.lakehouse_bucket_arn}/*"
-        ]
-      },
-      {
-        Sid    = "MWAADagsBucketReadAccess"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [
-          var.mwaa_dags_bucket_arn,
-          "${var.mwaa_dags_bucket_arn}/*"
-        ]
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          Sid    = "LakehouseBucketAccess"
+          Effect = "Allow"
+          Action = [
+            "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+            "s3:ListBucket", "s3:GetBucketLocation",
+            "s3:GetObjectVersion"
+          ]
+          Resource = [
+            var.lakehouse_bucket_arn,
+            "${var.lakehouse_bucket_arn}/*"
+          ]
+        }
+      ],
+      var.mwaa_dags_bucket_arn != "" ? [
+        {
+          Sid    = "MWAADagsBucketReadAccess"
+          Effect = "Allow"
+          Action = ["s3:GetObject", "s3:ListBucket"]
+          Resource = [
+            var.mwaa_dags_bucket_arn,
+            "${var.mwaa_dags_bucket_arn}/*"
+          ]
+        }
+      ] : []
+    )
   })
 }
 
@@ -305,6 +316,7 @@ resource "aws_iam_policy" "github_deploy_tf" {
         Effect = "Allow"
         Action = [
           "s3:*", "glue:*", "athena:*",
+          "lambda:*", "states:*", "scheduler:*", "events:*",
           "kms:CreateKey", "kms:CreateAlias", "kms:DescribeKey",
           "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus",
           "kms:ListAliases", "kms:ListKeys", "kms:PutKeyPolicy",

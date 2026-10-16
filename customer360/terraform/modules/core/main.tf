@@ -164,18 +164,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "lakehouse" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S3 — MWAA DAG Bucket (separate from lakehouse data)
+# S3 — Artifacts Bucket (Glue scripts, Lambda packages, dbt bundles)
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_s3_bucket" "mwaa_dags" {
-  bucket        = "${local.name_prefix}-mwaa-dags"
+resource "aws_s3_bucket" "artifacts" {
+  bucket        = "${local.name_prefix}-artifacts"
   force_destroy = var.environment != "prod"
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-mwaa-dags" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-artifacts" })
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "mwaa_dags" {
-  bucket = aws_s3_bucket.mwaa_dags.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -186,13 +186,13 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "mwaa_dags" {
   }
 }
 
-resource "aws_s3_bucket_versioning" "mwaa_dags" {
-  bucket = aws_s3_bucket.mwaa_dags.id
+resource "aws_s3_bucket_versioning" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
   versioning_configuration { status = "Enabled" }
 }
 
-resource "aws_s3_bucket_public_access_block" "mwaa_dags" {
-  bucket                  = aws_s3_bucket.mwaa_dags.id
+resource "aws_s3_bucket_public_access_block" "artifacts" {
+  bucket                  = aws_s3_bucket.artifacts.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -256,14 +256,24 @@ output "lakehouse_bucket_arn" {
   value       = aws_s3_bucket.lakehouse.arn
 }
 
+output "artifacts_bucket_name" {
+  description = "Name of the pipeline artifacts S3 bucket"
+  value       = aws_s3_bucket.artifacts.bucket
+}
+
+output "artifacts_bucket_arn" {
+  description = "ARN of the pipeline artifacts S3 bucket"
+  value       = aws_s3_bucket.artifacts.arn
+}
+
 output "mwaa_dags_bucket_name" {
-  description = "Name of the MWAA DAGs S3 bucket"
-  value       = aws_s3_bucket.mwaa_dags.bucket
+  description = "Deprecated alias for artifacts bucket name"
+  value       = aws_s3_bucket.artifacts.bucket
 }
 
 output "mwaa_dags_bucket_arn" {
-  description = "ARN of the MWAA DAGs S3 bucket"
-  value       = aws_s3_bucket.mwaa_dags.arn
+  description = "Deprecated alias for artifacts bucket ARN"
+  value       = aws_s3_bucket.artifacts.arn
 }
 
 output "kms_key_arn" {
