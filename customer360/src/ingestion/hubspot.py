@@ -1,61 +1,96 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import os
+from typing import Any, Dict, List, Optional
 
-import requests
-from typing import Iterable, List, Dict, Any, Optional
-
-from src.ingestion.base import BaseIngest
 from src.config.settings import get_settings
-from src.utils.retry import retry_on_exception
+from src.errors import SourceModeError
+from src.ingestion.base import BaseIngest
+from src.ingestion.http_client import SourceHttpClient
+from src.ingestion.source_mode import load_source_credentials
+
+CONTACT_PROPERTIES = [
+    "firstname", "lastname", "email", "phone", "createdate",
+    "lastmodifieddate", "lifecyclestage", "hubspot_owner_id",
+]
 
 
 class HubSpotIngest(BaseIngest):
-    def __init__(self):
-        super().__init__(source="hubspot", object_name="contacts")
+    """HubSpot CRM contacts (contacts only; orders are OMS, products are PIM).
+
+    api mode reads a private-app token from secret customer360/<env>/hubspot
+    {"access_token": "pat-..."} or the legacy HUBSPOT_ACCESS_TOKEN setting.
+    """
+
+    watermark_fields = ["lastmodifieddate", "hs_lastmodifieddate", "updatedAt"]
+
+    def __init__(self, run_id: Optional[str] = None):
+        super().__init__(source="hubspot", object_name="contacts", run_id=run_id)
         self.settings = get_settings()
-        self.token = self.settings.HUBSPOT_ACCESS_TOKEN
-        self._use_synthetic = self._is_placeholder_token(self.token)
-        self.headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"} if self.token and not self._use_synthetic else {}
+        self.base_url = getattr(self.settings, "HUBSPOT_BASE_URL", None) or "https://api.hubapi.com"
+        self.token: Optional[str] = getattr(self.settings, "HUBSPOT_ACCESS_TOKEN", None)
+        self._http: Optional[SourceHttpClient] = None
 
     @staticmethod
     def _is_placeholder_token(value: Optional[str]) -> bool:
         if not value:
             return True
         normalized = value.strip().lower()
-        placeholders = {"your_hubspot_token", "your_hubspot_api_key", "your_api_key", "placeholder", "example", "changeme", "dummy"}
-        return normalized.startswith("your_") or any(item in normalized for item in ("placeholder", "example", "changeme", "dummy")) or normalized in placeholders
+        return normalized.startswith("your_") or any(
+            item in normalized for item in ("placeholder", "example", "changeme", "dummy")
+        )
 
     def _synthetic_contact_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Six contacts whose emails match the synthetic OMS/loyalty/marketing/support customers."""
         base = datetime.now(timezone.utc)
         records: List[Dict[str, Any]] = []
-        for idx in range(2):
-            updated_at = (base - timedelta(minutes=idx * 30)).isoformat()
-            if watermark and updated_at <= watermark:
+        for idx in range(6):
+            number = 1001 + idx
+            updated_at = (base - timedelta(minutes=idx * 30)).isoformat().replace("+00:00", "Z")
+            if watermark and updated_at < watermark:
                 continue
             records.append({
-                "id": f"synthetic_contact_{idx + 1}",
+                "id": f"{9000000 + number}",
                 "properties": {
-                    "firstname": f"Synthetic",
-                    "lastname": f"Customer {idx + 1}",
-                    "email": f"customer{idx + 1}@synthetic.local",
-                    "phone": "+1555000000{idx}",
-                    "createdate": (base - timedelta(days=idx + 1)).isoformat(),
+                    "firstname": "Synthetic",
+                    "lastname": f"Customer {number}",
+                    "email": f"customer{number}@synthetic.local",
+                    "phone": f"+1555000{number}",
+                    "createdate": (base - timedelta(days=idx + 1)).isoformat().replace("+00:00", "Z"),
                     "lastmodifieddate": updated_at,
                     "lifecyclestage": "customer",
                     "hubspot_owner_id": "owner_001",
+                    "customer_id": f"C-{number}",
                 },
                 "source_type": "synthetic",
             })
         return records
 
+    def _synthetic_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self._synthetic_contact_records(watermark)
 
-    @retry_on_exception(max_attempts=4)
     def _fetch_page(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        resp = requests.get(url, headers=self.headers, params=params, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        if self._http is None:
+            self._http = SourceHttpClient(
+                self.source,
+                headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+            )
+        return self._http.get_json(url, params=params)
+
+    def record_watermark(self, record: Dict[str, Any]) -> Optional[str]:
+        props = record.get("properties") or {} if isinstance(record, dict) else {}
+        return props.get("lastmodifieddate") or props.get("hs_lastmodifieddate") or record.get("updatedAt")
+
+    def _fetch_api(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        secret = load_source_credentials(self.source)
+        self.token = secret.get("access_token") or self.token
+        if self._is_placeholder_token(self.token):
+            raise SourceModeError("hubspot api mode needs a real private-app access_token")
+        records, _ = self._fetch_objects("contacts", {"contact": CONTACT_PROPERTIES})
+        return self._filter_since(records, watermark)
+
+    def prepare_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return super().prepare_records(self._deduplicate_records(records))
 
     def _fetch_objects(
         self,
@@ -186,144 +221,3 @@ class HubSpotIngest(BaseIngest):
             extraction_end=extraction_end_value,
         )
         return deduped
-
-    def _synthetic_mode(self) -> bool:
-        env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
-        if env in ("prod", "production"):
-            return False
-        if env in ("staging", "stage") and not allow_synthetic:
-            return False
-        return self._use_synthetic or not self.token
-
-    def run(self) -> None:
-        url = f"{self.settings.HUBSPOT_BASE_URL}/crm/v3/objects/contacts"
-        properties = [
-            "firstname",
-            "lastname",
-            "email",
-            "phone",
-            "createdate",
-            "lastmodifieddate",
-            "lifecyclestage",
-            "hubspot_owner_id",
-        ]
-
-        params = {"limit": 100, "properties": ",".join(properties), "archived": False}
-
-        default_watermark = "1970-01-01T00:00:00Z"
-        lookback_minutes = self.get_lookback_minutes(self.settings.HUBSPOT_LOOKBACK_MINUTES)
-        watermark = self.resolve_watermark(default_watermark, lookback_minutes=lookback_minutes)
-        extraction_end = self.capture_extraction_end()
-        window_start = self.compute_window_start(watermark, lookback_minutes=lookback_minutes, extraction_end=extraction_end)
-        window_start_dt = self._parse_datetime(window_start)
-        self.log_event(
-            "hubspot_contact_extraction_start",
-            watermark_before=watermark,
-            lookback_minutes=lookback_minutes,
-            lookback_start=window_start,
-            extraction_end=extraction_end,
-            page_size=params.get("limit"),
-            source_url=url,
-        )
-
-        # Short-circuit to synthetic data if no valid token and fallback is permitted.
-        # Avoids a guaranteed 401/timeout before the except block's fallback triggers.
-        if self._synthetic_mode():
-            self.logger.info("HubSpot _synthetic_mode active — using synthetic contact records directly.")
-            results = self._synthetic_contact_records(watermark)
-            deduped_results = self._deduplicate_records(results)
-            if not deduped_results:
-                self.record_metadata(0, 0, "success", url, "")
-                return
-            key = self.persist_raw(deduped_results)
-            latest_watermark = self._latest_record_timestamp(deduped_results, field_names=["lastmodifieddate", "hs_lastmodifieddate"])
-            if latest_watermark:
-                self.update_checkpoint(latest_watermark, run_id=self.run_id)
-            self.record_metadata(len(deduped_results), len(deduped_results), "success", url, key or "")
-            return
-
-        results: List[Dict[str, Any]] = []
-        page_count = 0
-        try:
-            after: Optional[str] = None
-            while True:
-                if after:
-                    params["after"] = after
-                page = self._fetch_page(url, params)
-                page_count += 1
-                page_results = page.get("results", [])
-                self.log_event(
-                    "hubspot_api_page_response",
-                    page_number=page_count,
-                    page_size=len(page_results),
-                    next_after=page.get("paging", {}).get("next", {}).get("after"),
-                    has_paging=bool(page.get("paging")),
-                )
-                for obj in page_results:
-                    props = obj.get("properties", {})
-                    updated_at = props.get("lastmodifieddate")
-                    value_dt = self._parse_datetime(updated_at)
-                    if window_start_dt is None or not value_dt or value_dt >= window_start_dt:
-                        results.append(obj)
-
-                paging = page.get("paging")
-                if not paging:
-                    break
-                next_token = paging.get("next", {}).get("after")
-                if not next_token:
-                    break
-                after = next_token
-        except Exception as exc:
-            env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-            allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
-            if env in ("prod", "production") or (env in ("staging", "stage") and not allow_synthetic):
-                self.logger.error("HubSpot API failed in %s environment: %s", env, exc)
-                raise
-            self.logger.warning("HubSpot API unavailable; falling back to synthetic contacts.")
-            results = self._synthetic_contact_records(watermark)
-
-        deduped_results = self._deduplicate_records(results)
-        self.log_event(
-            "hubspot_contact_extraction_summary",
-            watermark_before=watermark,
-            lookback_start=window_start,
-            extraction_end=extraction_end,
-            raw_records=len(results),
-            accepted_records=len(deduped_results),
-            page_count=page_count,
-            watermark_after=watermark,
-        )
-
-        if not deduped_results:
-            self.log_event(
-                "hubspot_no_records_for_window",
-                source_object="contacts",
-                records_seen=len(results),
-                watermark_before=watermark,
-                lookback_start=window_start,
-                extraction_end=extraction_end,
-                window_type="incremental",
-            )
-            self.logger.info("No contact records matched the incremental window for HubSpot; no data persisted.")
-            self.record_metadata(0, 0, "success", f"{self.settings.HUBSPOT_BASE_URL}/crm/v3/objects/contacts", "")
-            return
-
-        key = self.persist_raw(deduped_results)
-        if not key:
-            self.log_event("hubspot_contact_write_failed", records_extracted=len(deduped_results), records_written=0, s3_key=key, watermark_before=watermark)
-            self.record_metadata(len(deduped_results), 0, "failed", f"{self.settings.HUBSPOT_BASE_URL}/crm/v3/objects/contacts", key, error_message="S3 persistence failed")
-            return
-
-        latest_watermark = self._latest_record_timestamp(deduped_results, field_names=["lastmodifieddate", "hs_lastmodifieddate"])
-        if latest_watermark:
-            self.update_checkpoint(latest_watermark, run_id=self.run_id)
-        self.log_event("hubspot_contact_write_summary", records_extracted=len(deduped_results), records_written=len(deduped_results), s3_key=key, watermark_after=latest_watermark)
-
-        self.record_metadata(
-            records_extracted=len(deduped_results),
-            records_uploaded=len(deduped_results),
-            status="success",
-            source_url=f"{self.settings.HUBSPOT_BASE_URL}/crm/v3/objects/contacts",
-            file_path=key,
-        )

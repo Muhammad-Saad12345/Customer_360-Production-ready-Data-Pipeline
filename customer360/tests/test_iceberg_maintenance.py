@@ -4,7 +4,9 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 from src.lakehouse.config import LakehouseConfig
-from src.lakehouse.iceberg_maintenance import IcebergMaintenanceManager, MaintenanceResult
+from src.lakehouse.iceberg_maintenance import (
+    IcebergMaintenanceManager,
+)
 
 
 class TestIcebergMaintenance(unittest.TestCase):

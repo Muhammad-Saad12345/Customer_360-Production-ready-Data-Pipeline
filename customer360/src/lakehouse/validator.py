@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from src.lakehouse.athena_client import AthenaClient
 from src.lakehouse.config import LakehouseConfig, get_lakehouse_config
 from src.lakehouse.glue_catalog import GlueIcebergCatalog
-from src.lakehouse.table_definitions import TABLE_REGISTRY, TableDefinition, get_table_definition
+from src.lakehouse.table_definitions import (
+    TableDefinition,
+    get_table_definition,
+)
 
 logger = logging.getLogger("customer360.lakehouse.validator")
 
@@ -71,7 +74,6 @@ class IcebergValidator:
 
         table_type = params.get("table_type", "").upper()
         location = sd.get("Location", "")
-        expected_prefix = self.config.table_location(table_name)
 
         is_iceberg = (table_type == "ICEBERG")
         valid_location = location.startswith("s3://") and table_name in location

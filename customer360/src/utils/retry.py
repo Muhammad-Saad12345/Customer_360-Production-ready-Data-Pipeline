@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Callable, Any
+from typing import Any, Callable
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 
 def retry_on_exception(max_attempts: int = 5):

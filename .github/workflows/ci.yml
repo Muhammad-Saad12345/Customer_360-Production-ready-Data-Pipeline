@@ -1,0 +1,261 @@
+name: Customer 360 CI/CD
+
+# GitHub only reads workflows from the repository-root .github/workflows. The
+# previous file lived in customer360/.github/workflows and never ran.
+#
+# No AWS keys are stored in GitHub. Jobs that touch AWS assume a role through
+# GitHub OIDC; the roles come from terraform/bootstrap and trust:
+#   pull_request                        -> AWS_PLAN_ROLE_ARN   (repository variable, read-only)
+#   environment "staging"               -> AWS_DEPLOY_ROLE_ARN (staging environment variable)
+#   environment "production" (main only, reviewer approval) -> AWS_DEPLOY_ROLE_ARN (production environment variable)
+# Optional per-environment variables: SCHEDULE_ENABLED ("true" only after three
+# good manual runs) and ENABLED_SOURCES (JSON list, e.g. ["hubspot","oms","pim"]).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Environment to deploy"
+        type: choice
+        options: [staging, prod]
+        default: staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.11"
+  TF_VERSION: "1.13.4"
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+defaults:
+  run:
+    working-directory: customer360
+
+jobs:
+  # ── 1. Everything that needs no AWS access ─────────────────────────────────
+  checks:
+    name: Lint, tests, ASL, dbt parse, Terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: customer360/requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt bandit
+
+      - name: Ruff
+        run: ruff check src/ tests/ lambda_handlers/ glue_jobs/ scripts/ --select E,F,W,I --ignore E501
+
+      - name: Bandit (medium and above fail the build)
+        run: bandit -r src/ lambda_handlers/ glue_jobs/ -ll -ii
+
+      - name: Unit, contract and local end-to-end tests (moto, no AWS)
+        run: python -m pytest -q
+
+      - name: State machine definition
+        run: |
+          python scripts/render_asl.py
+          npx --yes asl-validator@3.15.1 --json-path build/asl_rendered.json
+
+      - name: dbt parse with the Glue job's dbt version
+        run: |
+          python -m venv /tmp/dbt
+          /tmp/dbt/bin/pip install --quiet dbt-core==1.8.7 dbt-athena-community==1.8.3
+          cd dbt
+          for target in staging prod; do
+            DBT_PROFILES_DIR=. /tmp/dbt/bin/dbt parse --target "$target" --no-partial-parse
+          done
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt and validate
+        run: |
+          terraform fmt -check -recursive terraform
+          for dir in terraform/bootstrap terraform/environments/staging terraform/environments/prod; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 2. Plan on pull requests (read-only role) ──────────────────────────────
+  plan:
+    name: Terraform plan (${{ matrix.env }})
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.AWS_PLAN_ROLE_ARN != ''
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Plan
+        working-directory: customer360/terraform/environments/${{ matrix.env }}
+        run: |
+          terraform init -input=false -lock=false
+          terraform plan -input=false -lock=false -no-color \
+            -var "artifact_version=${GITHUB_SHA::12}" | tee plan.txt
+          { echo '### Terraform plan: ${{ matrix.env }}'; echo '```'; tail -n 60 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 3. Build artifacts once per commit ─────────────────────────────────────
+  build:
+    name: Package Lambda, Glue and dbt artifacts
+    if: github.event_name != 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: version
+        run: echo "version=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - name: Package
+        run: python scripts/package_artifacts.py --version "${{ steps.version.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ steps.version.outputs.version }}
+          path: customer360/build/artifacts/
+          retention-days: 30
+
+  # ── 4. Staging: every push to main, or manual ──────────────────────────────
+  deploy-staging:
+    name: Deploy staging
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TF_DIR: terraform/environments/staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifacts-${{ needs.build.outputs.version }}
+          path: customer360/build/artifacts/
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Upload artifacts
+        run: aws s3 sync build/artifacts/ "s3://c360-bucket786/artifacts/" --only-show-errors
+      - name: Terraform apply
+        env:
+          SCHEDULE_ENABLED: ${{ vars.SCHEDULE_ENABLED || 'false' }}
+          ENABLED_SOURCES: ${{ vars.ENABLED_SOURCES }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+        run: |
+          EXTRA=(-var "schedule_enabled=$SCHEDULE_ENABLED")
+          if [ -n "$ALERT_EMAIL" ]; then EXTRA+=(-var "alert_email_addresses=[\"$ALERT_EMAIL\"]"); fi
+          if [ -n "$ENABLED_SOURCES" ]; then EXTRA+=(-var "enabled_sources=$ENABLED_SOURCES"); fi
+          terraform -chdir="$TF_DIR" init -input=false
+          terraform -chdir="$TF_DIR" plan -input=false -out=tfplan \
+            -var "artifact_version=$VERSION" \
+            "${EXTRA[@]}"
+          terraform -chdir="$TF_DIR" apply -input=false tfplan
+      - name: Smoke test (dry-run execution)
+        run: |
+          SM=$(terraform -chdir="$TF_DIR" output -raw state_machine_arn)
+          bash scripts/smoke_dry_run.sh "$SM"
+
+  # ── 5. Production: manual, main only, reviewer approval ────────────────────
+  deploy-prod:
+    name: Deploy production
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TF_DIR: terraform/environments/prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifacts-${{ needs.build.outputs.version }}
+          path: customer360/build/artifacts/
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Core first (creates the artifacts bucket the functions load from)
+        run: |
+          terraform -chdir="$TF_DIR" init -input=false
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve -target=module.core \
+            -var "artifact_version=$VERSION"
+      - name: Upload artifacts
+        run: |
+          BUCKET=$(terraform -chdir="$TF_DIR" output -raw artifacts_bucket 2>/dev/null || echo c360-prod-artifacts)
+          aws s3 sync build/artifacts/ "s3://$BUCKET/artifacts/" --only-show-errors
+      - name: Terraform apply
+        env:
+          SCHEDULE_ENABLED: ${{ vars.SCHEDULE_ENABLED || 'false' }}
+          ENABLED_SOURCES: ${{ vars.ENABLED_SOURCES }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+        run: |
+          EXTRA=(-var "schedule_enabled=$SCHEDULE_ENABLED")
+          if [ -n "$ALERT_EMAIL" ]; then EXTRA+=(-var "alert_email_addresses=[\"$ALERT_EMAIL\"]"); fi
+          if [ -n "$ENABLED_SOURCES" ]; then EXTRA+=(-var "enabled_sources=$ENABLED_SOURCES"); fi
+          terraform -chdir="$TF_DIR" plan -input=false -out=tfplan \
+            -var "artifact_version=$VERSION" \
+            "${EXTRA[@]}"
+          terraform -chdir="$TF_DIR" apply -input=false tfplan
+      - name: Smoke test (dry-run execution)
+        run: |
+          SM=$(terraform -chdir="$TF_DIR" output -raw state_machine_arn)
+          bash scripts/smoke_dry_run.sh "$SM"

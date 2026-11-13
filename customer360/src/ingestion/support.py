@@ -1,24 +1,54 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
-
 from src.config.settings import get_settings
+from src.errors import SourceModeError
 from src.ingestion.base import BaseIngest
+from src.ingestion.http_client import SourceHttpClient
+from src.ingestion.source_mode import load_source_credentials
+
+_CHANNEL_MAP = {"email": "email", "web": "web", "web_form": "web", "chat": "chat", "native_messaging": "chat",
+                "voice": "phone", "phone": "phone", "api": "api"}
+
+
+def map_zendesk_ticket(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """Zendesk ticket -> support contract. customer_id is the requester id."""
+    via = ((ticket.get("via") or {}).get("channel") or "api").lower()
+    satisfaction = (ticket.get("satisfaction_rating") or {}).get("score")
+    csat = {"good": 5.0, "bad": 1.0}.get(str(satisfaction).lower()) if satisfaction else None
+    status = (ticket.get("status") or "").lower()
+    return {
+        "ticket_id": f"zd-{ticket.get('id')}",
+        "customer_id": f"zd-user-{ticket.get('requester_id')}" if ticket.get("requester_id") else "",
+        "channel": _CHANNEL_MAP.get(via, "api"),
+        "category": (ticket.get("type") or "question"),
+        "priority": (ticket.get("priority") or "normal"),
+        "status": status,
+        "agent_id": str(ticket.get("assignee_id") or ""),
+        "created_at": ticket.get("created_at"),
+        "resolved_at": ticket.get("updated_at") if status in ("solved", "closed") else None,
+        "updated_at": ticket.get("updated_at"),
+        "csat_score": csat,
+        "source_type": "zendesk",
+    }
 
 
 class ZendeskIngest(BaseIngest):
-    def __init__(self):
-        super().__init__(source="support", object_name="tickets")
+    """Zendesk tickets via the incremental cursor export (api mode).
+
+    Secret customer360/<env>/support: {"subdomain": "...", "email": "...", "api_token": "..."}.
+    Falls back to the legacy ZENDESK_* settings.
+    """
+
+    watermark_fields = ["updated_at", "created_at"]
+
+    def __init__(self, run_id: Optional[str] = None):
+        super().__init__(source="support", object_name="tickets", run_id=run_id)
         self.settings = get_settings()
-        self.base_url = (
-            f"https://{self.settings.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/"
-            if self.settings.ZENDESK_SUBDOMAIN
-            else "https://example.zendesk.com/api/v2/"
-        )
+        subdomain = getattr(self.settings, "ZENDESK_SUBDOMAIN", None)
+        self.base_url = f"https://{subdomain}.zendesk.com/api/v2/" if subdomain else ""
 
     def _synthetic_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
         base = datetime.now(timezone.utc)
@@ -30,7 +60,7 @@ class ZendeskIngest(BaseIngest):
             records.append(
                 {
                     "ticket_id": f"ticket_{idx + 1}",
-                    "customer_id": f"cust_{idx + 200}",
+                    "customer_id": f"C-{1001 + idx}",
                     "channel": "email",
                     "category": "billing",
                     "priority": "normal",
@@ -44,40 +74,24 @@ class ZendeskIngest(BaseIngest):
             )
         return records
 
-    def fetch_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
-        env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
-        api_key = self.settings.ZENDESK_API_KEY or self.settings.ZENDESK_SECRET_KEY
-        if not api_key or not self.settings.ZENDESK_EMAIL:
-            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
-                raise ValueError(f"Zendesk credentials missing in {env} environment.")
-            self.logger.warning("Zendesk credentials missing in %s mode; using synthetic records.", env)
-            return self._synthetic_records(watermark)
-
-        endpoint = f"{self.base_url}incremental/tickets/cursor.json"
-        params = {"page[size]": 100}
-        if watermark:
-            params["start_time"] = watermark
-        try:
-            response = requests.get(endpoint, params=params, auth=(self.settings.ZENDESK_EMAIL, api_key), timeout=30)
-            response.raise_for_status()
-            payload = response.json()
-            records = payload.get("tickets", [])
-            return [r for r in records if not watermark or (r.get("updated_at") or r.get("created_at") or "1970") >= watermark]
-        except Exception as exc:
-            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
-                self.logger.error("Zendesk API call failed in %s environment: %s", env, exc)
-                raise
-            self.logger.warning("Zendesk API failed in %s mode; falling back to synthetic records: %s", env, exc)
-            return self._synthetic_records(watermark)
-
-    def run(self) -> None:
-        watermark = self.resolve_watermark(default_watermark="1970-01-01T00:00:00Z")
-        records = self.fetch_records(watermark)
-        if not records:
-            self.record_metadata(0, 0, "success", self.base_url, self.object_name)
-            return
-
-        key = self.persist_raw(records)
-        self.update_checkpoint(records[-1].get("updated_at") or records[-1].get("created_at") or watermark, run_id=self.run_id)
-        self.record_metadata(len(records), len(records), "success", self.base_url, key)
+    def _fetch_api(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        secret = load_source_credentials(self.source)
+        subdomain = secret.get("subdomain") or getattr(self.settings, "ZENDESK_SUBDOMAIN", None)
+        email = secret.get("email") or getattr(self.settings, "ZENDESK_EMAIL", None)
+        token = secret.get("api_token") or getattr(self.settings, "ZENDESK_API_KEY", None) or getattr(self.settings, "ZENDESK_SECRET_KEY", None)
+        if not subdomain or not email or not token:
+            raise SourceModeError("support api mode needs Zendesk subdomain, email and api_token")
+        self.base_url = f"https://{subdomain}.zendesk.com/api/v2/"
+        http = SourceHttpClient(self.source, auth=(f"{email}/token", token))
+        start = self._parse_datetime(watermark) if watermark else None
+        start_time = int(start.timestamp()) if start else 0
+        url: Optional[str] = f"{self.base_url}incremental/tickets/cursor.json"
+        params: Optional[Dict[str, Any]] = {"start_time": start_time, "per_page": 1000}
+        records: List[Dict[str, Any]] = []
+        for _ in range(1000):
+            payload = http.get_json(url, params=params)
+            records.extend(map_zendesk_ticket(t) for t in payload.get("tickets") or [])
+            if payload.get("end_of_stream") or not payload.get("after_url"):
+                return records
+            url, params = payload["after_url"], None
+        raise SourceModeError("support: more than 1000 pages from Zendesk")

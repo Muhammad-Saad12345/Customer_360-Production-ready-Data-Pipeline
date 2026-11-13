@@ -207,8 +207,10 @@ resource "aws_glue_catalog_database" "customer360" {
   name        = "customer360_${var.environment}"
   description = "Customer 360 Lakehouse — Iceberg tables (${var.environment})"
 
+  # ALL matches the account's Lake Formation default, keeping IAM as the single
+  # access-control layer; SELECT would block the pipeline's own MERGE writes.
   create_table_default_permission {
-    permissions = ["SELECT"]
+    permissions = ["ALL"]
     principal { data_lake_principal_identifier = "IAM_ALLOWED_PRINCIPALS" }
   }
 }
@@ -263,16 +265,6 @@ output "artifacts_bucket_name" {
 
 output "artifacts_bucket_arn" {
   description = "ARN of the pipeline artifacts S3 bucket"
-  value       = aws_s3_bucket.artifacts.arn
-}
-
-output "mwaa_dags_bucket_name" {
-  description = "Deprecated alias for artifacts bucket name"
-  value       = aws_s3_bucket.artifacts.bucket
-}
-
-output "mwaa_dags_bucket_arn" {
-  description = "Deprecated alias for artifacts bucket ARN"
   value       = aws_s3_bucket.artifacts.arn
 }
 

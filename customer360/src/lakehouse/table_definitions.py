@@ -88,6 +88,7 @@ OMS_ORDERS_TABLE = TableDefinition(
         ColumnDefinition("currency", "string", "Three-letter ISO currency code e.g. USD"),
         ColumnDefinition("channel", "string", "Order sales channel e.g. web, mobile, retail"),
         ColumnDefinition("updated_at", "string", "Timestamp of last order status change"),
+        ColumnDefinition("customer_email", "string", "Customer email from the order (identity resolution key)"),
         ColumnDefinition("source", "string", "Originating source system name ('oms')"),
         ColumnDefinition("entity", "string", "Originating entity name ('orders')"),
         ColumnDefinition("run_id", "string", "Airflow pipeline batch execution UUID"),

@@ -1,6 +1,7 @@
 {
-  "Comment": "Customer 360 End-to-End Batch Lakehouse Orchestration State Machine",
+  "Comment": "Customer 360 daily batch. Failures are NOT caught at the top level: a failed execution emits an EventBridge status-change event (alerting) and can be redriven from the failed state.",
   "StartAt": "InitializePipeline",
+  "TimeoutSeconds": 10800,
   "States": {
     "InitializePipeline": {
       "Type": "Task",
@@ -8,9 +9,10 @@
       "Parameters": {
         "FunctionName": "${initialize_lambda_arn}",
         "Payload": {
-          "environment.$": "$$.Execution.Input.environment",
-          "dry_run.$": "$$.Execution.Input.dry_run",
-          "sources.$": "$$.Execution.Input.sources"
+          "input.$": "$$.Execution.Input",
+          "execution_name.$": "$$.Execution.Name",
+          "execution_arn.$": "$$.Execution.Id",
+          "state_machine_arn.$": "$$.StateMachine.Id"
         }
       },
       "ResultSelector": {
@@ -18,768 +20,279 @@
         "environment.$": "$.Payload.environment",
         "dry_run.$": "$.Payload.dry_run",
         "sources.$": "$.Payload.sources",
-        "execution_start.$": "$.Payload.execution_start"
+        "mandatory_sources.$": "$.Payload.mandatory_sources"
       },
       "ResultPath": "$.init",
+      "TimeoutSeconds": 120,
       "Retry": [
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
-            "Lambda.TooManyRequestsException"
+            "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
+            "TransientError"
           ],
-          "IntervalSeconds": 2,
+          "IntervalSeconds": 5,
           "MaxAttempts": 3,
-          "BackoffRate": 2.0
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
         }
       ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyFailure"
-        }
-      ],
-      "Next": "ProcessAllSourcesParallel"
+      "Next": "ProcessSources"
     },
-
-    "ProcessAllSourcesParallel": {
-      "Type": "Parallel",
-      "Comment": "Fan-out: Orchestrates 6 ingestion, silver validation, quality check, and Iceberg load pipelines concurrently",
+    "ProcessSources": {
+      "Type": "Map",
+      "ItemsPath": "$.init.sources",
+      "ItemSelector": {
+        "source.$": "$$.Map.Item.Value.source",
+        "entity.$": "$$.Map.Item.Value.entity",
+        "run_id.$": "$.init.run_id",
+        "environment.$": "$.init.environment",
+        "dry_run.$": "$.init.dry_run"
+      },
+      "MaxConcurrency": 6,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Ingest",
+        "States": {
+          "Ingest": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ingest_lambda_arn}",
+              "Payload": {
+                "source.$": "$.source",
+                "entity.$": "$.entity",
+                "run_id.$": "$.run_id",
+                "environment.$": "$.environment",
+                "dry_run.$": "$.dry_run"
+              }
+            },
+            "ResultSelector": {
+              "status.$": "$.Payload.status",
+              "records_ingested.$": "$.Payload.records_ingested",
+              "s3_raw_key.$": "$.Payload.s3_raw_key",
+              "source_mode.$": "$.Payload.source_mode"
+            },
+            "ResultPath": "$.ingest",
+            "TimeoutSeconds": 960,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "TransientError"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.error",
+                "Next": "SourceFailed"
+              }
+            ],
+            "Next": "SilverGate"
+          },
+          "SilverGate": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${silver_gate_lambda_arn}",
+              "Payload": {
+                "source.$": "$.source",
+                "entity.$": "$.entity",
+                "run_id.$": "$.run_id",
+                "environment.$": "$.environment",
+                "dry_run.$": "$.dry_run",
+                "s3_raw_key.$": "$.ingest.s3_raw_key"
+              }
+            },
+            "ResultSelector": {
+              "valid_count.$": "$.Payload.valid_count",
+              "invalid_count.$": "$.Payload.invalid_count",
+              "silver_path.$": "$.Payload.silver_path",
+              "quarantine_path.$": "$.Payload.quarantine_path"
+            },
+            "ResultPath": "$.silver",
+            "TimeoutSeconds": 960,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "TransientError"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.error",
+                "Next": "SourceFailed"
+              }
+            ],
+            "Next": "QualityCheck"
+          },
+          "QualityCheck": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${quality_check_lambda_arn}",
+              "Payload": {
+                "source.$": "$.source",
+                "entity.$": "$.entity",
+                "run_id.$": "$.run_id",
+                "environment.$": "$.environment",
+                "dry_run.$": "$.dry_run",
+                "valid_count.$": "$.silver.valid_count",
+                "invalid_count.$": "$.silver.invalid_count",
+                "silver_path.$": "$.silver.silver_path"
+              }
+            },
+            "ResultSelector": {
+              "verdict.$": "$.Payload.verdict",
+              "rejection_rate_pct.$": "$.Payload.rejection_rate_pct"
+            },
+            "ResultPath": "$.quality",
+            "TimeoutSeconds": 360,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "TransientError"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.error",
+                "Next": "SourceFailed"
+              }
+            ],
+            "Next": "IcebergLoad"
+          },
+          "IcebergLoad": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${iceberg_load_lambda_arn}",
+              "Payload": {
+                "source.$": "$.source",
+                "entity.$": "$.entity",
+                "run_id.$": "$.run_id",
+                "environment.$": "$.environment",
+                "dry_run.$": "$.dry_run",
+                "silver_path.$": "$.silver.silver_path",
+                "valid_count.$": "$.silver.valid_count"
+              }
+            },
+            "ResultSelector": {
+              "status.$": "$.Payload.status",
+              "loaded_row_count.$": "$.Payload.loaded_row_count",
+              "athena_executed.$": "$.Payload.athena_executed"
+            },
+            "ResultPath": "$.load",
+            "TimeoutSeconds": 960,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "TransientError"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.error",
+                "Next": "SourceFailed"
+              }
+            ],
+            "Next": "SourceSucceeded"
+          },
+          "SourceSucceeded": {
+            "Type": "Pass",
+            "Parameters": {
+              "source.$": "$.source",
+              "entity.$": "$.entity",
+              "status": "succeeded",
+              "source_mode.$": "$.ingest.source_mode",
+              "records_ingested.$": "$.ingest.records_ingested",
+              "valid_count.$": "$.silver.valid_count",
+              "invalid_count.$": "$.silver.invalid_count",
+              "rejection_rate_pct.$": "$.quality.rejection_rate_pct",
+              "load_status.$": "$.load.status",
+              "loaded_row_count.$": "$.load.loaded_row_count",
+              "athena_executed.$": "$.load.athena_executed"
+            },
+            "End": true
+          },
+          "SourceFailed": {
+            "Type": "Pass",
+            "Comment": "Isolates one source's failure; ReconcileRun decides whether the run may continue.",
+            "Parameters": {
+              "source.$": "$.source",
+              "entity.$": "$.entity",
+              "status": "failed",
+              "error.$": "$.error.Error",
+              "cause.$": "$.error.Cause"
+            },
+            "End": true
+          }
+        }
+      },
       "ResultPath": "$.branch_results",
-      "Branches": [
-        {
-          "StartAt": "Ingest_HubSpot",
-          "States": {
-            "Ingest_HubSpot": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "hubspot",
-                  "entity": "contacts",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_HubSpot"
-            },
-            "SilverGate_HubSpot": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "hubspot",
-                  "entity": "contacts",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_HubSpot"
-            },
-            "QualityCheck_HubSpot": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "hubspot",
-                  "entity": "contacts",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_HubSpot"
-            },
-            "IcebergLoad_HubSpot": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "hubspot",
-                  "entity": "contacts",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        },
-        {
-          "StartAt": "Ingest_OMS",
-          "States": {
-            "Ingest_OMS": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "oms",
-                  "entity": "orders",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_OMS"
-            },
-            "SilverGate_OMS": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "oms",
-                  "entity": "orders",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_OMS"
-            },
-            "QualityCheck_OMS": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "oms",
-                  "entity": "orders",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_OMS"
-            },
-            "IcebergLoad_OMS": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "oms",
-                  "entity": "orders",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        },
-        {
-          "StartAt": "Ingest_PIM",
-          "States": {
-            "Ingest_PIM": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "pim",
-                  "entity": "products",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_PIM"
-            },
-            "SilverGate_PIM": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "pim",
-                  "entity": "products",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_PIM"
-            },
-            "QualityCheck_PIM": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "pim",
-                  "entity": "products",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_PIM"
-            },
-            "IcebergLoad_PIM": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "pim",
-                  "entity": "products",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        },
-        {
-          "StartAt": "Ingest_Loyalty",
-          "States": {
-            "Ingest_Loyalty": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "loyalty",
-                  "entity": "loyalty",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_Loyalty"
-            },
-            "SilverGate_Loyalty": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "loyalty",
-                  "entity": "loyalty",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_Loyalty"
-            },
-            "QualityCheck_Loyalty": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "loyalty",
-                  "entity": "loyalty",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_Loyalty"
-            },
-            "IcebergLoad_Loyalty": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "loyalty",
-                  "entity": "loyalty",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        },
-        {
-          "StartAt": "Ingest_Marketing",
-          "States": {
-            "Ingest_Marketing": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "marketing",
-                  "entity": "campaign_events",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_Marketing"
-            },
-            "SilverGate_Marketing": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "marketing",
-                  "entity": "campaign_events",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_Marketing"
-            },
-            "QualityCheck_Marketing": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "marketing",
-                  "entity": "campaign_events",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_Marketing"
-            },
-            "IcebergLoad_Marketing": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "marketing",
-                  "entity": "campaign_events",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        },
-        {
-          "StartAt": "Ingest_Support",
-          "States": {
-            "Ingest_Support": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${ingest_lambda_arn}",
-                "Payload": {
-                  "source": "support",
-                  "entity": "tickets",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "status.$": "$.Payload.status",
-                "records_ingested.$": "$.Payload.records_ingested"
-              },
-              "ResultPath": "$.ingest",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.SdkClientException",
-                    "Lambda.TooManyRequestsException"
-                  ],
-                  "IntervalSeconds": 3,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2.0
-                }
-              ],
-              "Next": "SilverGate_Support"
-            },
-            "SilverGate_Support": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${silver_gate_lambda_arn}",
-                "Payload": {
-                  "source": "support",
-                  "entity": "tickets",
-                  "run_id.$": "$.init.run_id",
-                  "environment.$": "$.init.environment"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "input_record_count.$": "$.Payload.input_record_count",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "silver_path.$": "$.Payload.silver_path",
-                "quarantine_path.$": "$.Payload.quarantine_path"
-              },
-              "ResultPath": "$.silver",
-              "Next": "QualityCheck_Support"
-            },
-            "QualityCheck_Support": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${quality_check_lambda_arn}",
-                "Payload": {
-                  "source": "support",
-                  "entity": "tickets",
-                  "run_id.$": "$.init.run_id",
-                  "input_record_count.$": "$.silver.input_record_count",
-                  "valid_count.$": "$.silver.valid_count",
-                  "invalid_count.$": "$.silver.invalid_count",
-                  "silver_path.$": "$.silver.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "valid_count.$": "$.Payload.valid_count",
-                "invalid_count.$": "$.Payload.invalid_count",
-                "rejection_rate_pct.$": "$.Payload.rejection_rate_pct",
-                "silver_path.$": "$.Payload.silver_path"
-              },
-              "ResultPath": "$.quality",
-              "Next": "IcebergLoad_Support"
-            },
-            "IcebergLoad_Support": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Parameters": {
-                "FunctionName": "${iceberg_load_lambda_arn}",
-                "Payload": {
-                  "source": "support",
-                  "entity": "tickets",
-                  "run_id.$": "$.init.run_id",
-                  "valid_count.$": "$.quality.valid_count",
-                  "silver_path.$": "$.quality.silver_path",
-                  "environment.$": "$.init.environment",
-                  "dry_run.$": "$.init.dry_run"
-                }
-              },
-              "ResultSelector": {
-                "source.$": "$.Payload.source",
-                "entity.$": "$.Payload.entity",
-                "run_id.$": "$.Payload.run_id",
-                "silver_row_count.$": "$.Payload.silver_row_count",
-                "deduped_row_count.$": "$.Payload.deduped_row_count",
-                "status.$": "$.Payload.status"
-              },
-              "End": true
-            }
-          }
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyFailure"
-        }
-      ],
       "Next": "ReconcileRun"
     },
-
     "ReconcileRun": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -788,29 +301,106 @@
         "Payload": {
           "run_id.$": "$.init.run_id",
           "environment.$": "$.init.environment",
+          "dry_run.$": "$.init.dry_run",
+          "mandatory_sources.$": "$.init.mandatory_sources",
           "branch_results.$": "$.branch_results"
         }
       },
       "ResultSelector": {
-        "run_id.$": "$.Payload.run_id",
         "reconciliation_status.$": "$.Payload.reconciliation_status",
-        "total_sources_evaluated.$": "$.Payload.total_sources_evaluated",
-        "total_silver_records.$": "$.Payload.total_silver_records",
-        "total_loaded_records.$": "$.Payload.total_loaded_records",
-        "discrepancies.$": "$.Payload.discrepancies",
-        "status.$": "$.Payload.status"
+        "failed_sources.$": "$.Payload.failed_sources",
+        "warnings.$": "$.Payload.warnings"
       },
       "ResultPath": "$.reconcile",
-      "Catch": [
+      "TimeoutSeconds": 360,
+      "Retry": [
         {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyFailure"
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
+            "TransientError"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
         }
       ],
-      "Next": "DbtRun"
+      "Next": "GateTransform"
     },
-
+    "GateTransform": {
+      "Type": "Choice",
+      "Comment": "ReconcileRun raises ReconciliationFailed for blocking problems, so only pass/warn reach here.",
+      "Choices": [
+        {
+          "Variable": "$.init.dry_run",
+          "BooleanEquals": true,
+          "Next": "DryRunComplete"
+        },
+        {
+          "Variable": "$.reconcile.reconciliation_status",
+          "StringEquals": "PASSED_WITH_WARNINGS",
+          "Next": "NotifyWarnings"
+        },
+        {
+          "Variable": "$.reconcile.reconciliation_status",
+          "StringEquals": "PASSED",
+          "Next": "DbtRun"
+        }
+      ],
+      "Default": "UnexpectedReconcileStatus"
+    },
+    "NotifyWarnings": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${notify_lambda_arn}",
+        "Payload": {
+          "run_id.$": "$.init.run_id",
+          "environment.$": "$.init.environment",
+          "severity": "WARNING",
+          "failed_sources.$": "$.reconcile.failed_sources",
+          "warnings.$": "$.reconcile.warnings",
+          "execution_arn.$": "$$.Execution.Id"
+        }
+      },
+      "ResultSelector": {
+        "sns_message_id.$": "$.Payload.sns_message_id"
+      },
+      "ResultPath": "$.notify",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
+            "TransientError"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "DbtRun",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.notify_error",
+          "Next": "DbtRun"
+        }
+      ]
+    },
     "DbtRun": {
       "Type": "Task",
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
@@ -823,25 +413,25 @@
           "--s3-dbt-path": "${s3_dbt_path}"
         }
       },
+      "ResultSelector": {
+        "job_run_id.$": "$.Id",
+        "state.$": "$.JobRunState"
+      },
       "ResultPath": "$.dbt_run",
+      "TimeoutSeconds": 3900,
       "Retry": [
         {
-          "ErrorEquals": ["Glue.ConcurrentRunsExceededException"],
-          "IntervalSeconds": 30,
-          "MaxAttempts": 2,
+          "ErrorEquals": [
+            "Glue.ConcurrentRunsExceededException",
+            "Glue.ThrottlingException"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
           "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyFailure"
         }
       ],
       "Next": "DbtTest"
     },
-
     "DbtTest": {
       "Type": "Task",
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
@@ -854,77 +444,36 @@
           "--s3-dbt-path": "${s3_dbt_path}"
         }
       },
+      "ResultSelector": {
+        "job_run_id.$": "$.Id",
+        "state.$": "$.JobRunState"
+      },
       "ResultPath": "$.dbt_test",
+      "TimeoutSeconds": 3900,
       "Retry": [
         {
-          "ErrorEquals": ["Glue.ConcurrentRunsExceededException"],
-          "IntervalSeconds": 30,
-          "MaxAttempts": 2,
+          "ErrorEquals": [
+            "Glue.ConcurrentRunsExceededException",
+            "Glue.ThrottlingException"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
           "BackoffRate": 2.0
         }
       ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyFailure"
-        }
-      ],
-      "Next": "IcebergMaintenance"
+      "Next": "PipelineSucceeded"
     },
-
-    "IcebergMaintenance": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${iceberg_maintenance_lambda_arn}",
-        "Payload": {
-          "run_id.$": "$.init.run_id",
-          "environment.$": "$.init.environment",
-          "dry_run.$": "$.init.dry_run"
-        }
-      },
-      "ResultSelector": {
-        "run_id.$": "$.Payload.run_id",
-        "status.$": "$.Payload.status",
-        "tables_processed.$": "$.Payload.tables_processed"
-      },
-      "ResultPath": "$.maintenance",
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.maintenance_error",
-          "Next": "PipelineSuccess"
-        }
-      ],
-      "Next": "PipelineSuccess"
+    "DryRunComplete": {
+      "Type": "Succeed",
+      "Comment": "Dry run: nothing written beyond raw manifests; dbt skipped."
     },
-
-    "PipelineSuccess": {
-      "Type": "Succeed"
-    },
-
-    "NotifyFailure": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${notify_lambda_arn}",
-        "Payload": {
-          "run_id.$": "$.init.run_id",
-          "status": "failed",
-          "error.$": "$.error",
-          "execution_id.$": "$$.Execution.Id",
-          "environment.$": "$.init.environment"
-        }
-      },
-      "ResultPath": "$.notification",
-      "Next": "PipelineFailed"
-    },
-
-    "PipelineFailed": {
+    "UnexpectedReconcileStatus": {
       "Type": "Fail",
-      "Error": "PipelineExecutionFailed",
-      "Cause": "Customer 360 batch pipeline failed in one or more stages. Details notified via SNS."
+      "Error": "UnexpectedReconcileStatus",
+      "Cause": "ReconcileRun returned a status this state machine does not handle."
+    },
+    "PipelineSucceeded": {
+      "Type": "Succeed"
     }
   }
 }

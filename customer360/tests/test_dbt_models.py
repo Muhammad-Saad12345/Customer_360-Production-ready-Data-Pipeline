@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +84,7 @@ class TestDbtProjectStructure(unittest.TestCase):
         self.assertIn("master_customer_id", sql)
         self.assertIn("rfm_customer_segment", sql)
         self.assertIn("customer_churn_risk", sql)
-        self.assertIn("estimated_clv", sql)
+        self.assertIn("clv_proxy", sql)
         self.assertIn("total_completed_orders", sql)
         self.assertIn("total_net_revenue", sql)
 

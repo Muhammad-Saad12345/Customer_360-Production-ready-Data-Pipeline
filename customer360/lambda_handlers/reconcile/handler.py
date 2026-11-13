@@ -1,123 +1,97 @@
 """
-Lambda handler: reconcile
-Step Functions state: ReconcileRun
+Lambda handler: reconcile  (state ReconcileRun)
 
-Verifies end-to-end data integrity across all 6 ingest and load branches.
-Checks that all sources completed successfully, compares Silver counts
-against loaded Iceberg counts, records reconciliation stats, and emits
-CloudWatch audit metrics.
+Input:  {"run_id", "environment", "dry_run", "mandatory_sources", "branch_results": [...]}
+        Each branch result is either the SourceSucceeded summary
+        {"source", "entity", "status": "succeeded", "source_mode", "records_ingested",
+         "valid_count", "invalid_count", "rejection_rate_pct", "load_status",
+         "loaded_row_count", "athena_executed"}
+        or the SourceFailed summary {"source", "entity", "status": "failed", "error", "cause"}.
 
-Input event:
-{
-    "run_id": "c360-...",
-    "environment": "staging",
-    "branch_results": [
-        {
-            "source": "hubspot",
-            "entity": "contacts",
-            "valid_count": 48,
-            "silver_row_count": 48,
-            "deduped_row_count": 48,
-            "status": "success"
-        },
-        ...
-    ]
-}
+Output: {"reconciliation_status": PASSED | PASSED_WITH_WARNINGS, "failed_sources", "warnings", "summary"}
 
-Output:
-{
-    "run_id": "c360-...",
-    "reconciliation_status": "PASSED",
-    "total_sources_evaluated": 6,
-    "total_silver_records": 288,
-    "total_loaded_records": 288,
-    "discrepancies": [],
-    "status": "success"
-}
+Raises ReconciliationFailed when a mandatory source failed: the execution
+fails before dbt, and the EventBridge rule emails the alert.
 """
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List
+
+from src.errors import ReconciliationFailed
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+def _consistency_problem(branch: Dict[str, Any]) -> str:
+    """A 'succeeded' branch whose numbers do not add up is treated as failed."""
+    valid = int(branch.get("valid_count") or 0)
+    loaded = int(branch.get("loaded_row_count") or 0)
+    if valid > 0 and branch.get("load_status") == "success" and not branch.get("athena_executed"):
+        return "load reported success but the Athena MERGE did not run"
+    if valid > 0 and branch.get("load_status") == "skipped":
+        return f"{valid} valid rows but the Iceberg load was skipped"
+    if loaded > valid:
+        return f"loaded {loaded} rows but only {valid} were valid"
+    return ""
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """Entry point for the Reconcile Lambda."""
-    run_id: str = event.get("run_id", "unknown-run")
-    environment: str = event.get("environment", os.environ.get("ENVIRONMENT", "staging"))
-    os.environ["ENVIRONMENT"] = environment
+    run_id = event["run_id"]
+    dry_run = bool(event.get("dry_run", False))
+    mandatory = set(event.get("mandatory_sources") or [])
+    branches: List[Dict[str, Any]] = event.get("branch_results") or []
 
-    branch_results: List[Dict[str, Any]] = event.get("branch_results", [])
-    logger.info("ReconcileRun: run_id=%s evaluating %d branch results", run_id, len(branch_results))
+    failed: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    summary: Dict[str, Any] = {}
+    records = 0
 
-    total_silver = 0
-    total_loaded = 0
-    discrepancies = []
-    sources_evaluated = 0
-
-    for res in branch_results:
-        # Branch results may be nested or direct
-        if not isinstance(res, dict):
+    for branch in branches:
+        source = branch.get("source", "?")
+        if branch.get("status") != "succeeded":
+            failed.append({"source": source, "error": branch.get("error"), "cause": str(branch.get("cause"))[:500]})
             continue
+        problem = _consistency_problem(branch)
+        if problem:
+            failed.append({"source": source, "error": "ReconciliationMismatch", "cause": problem})
+            continue
+        records += int(branch.get("records_ingested") or 0)
+        summary[source] = {
+            "mode": branch.get("source_mode"),
+            "ingested": branch.get("records_ingested"),
+            "valid": branch.get("valid_count"),
+            "invalid": branch.get("invalid_count"),
+            "loaded": branch.get("loaded_row_count"),
+        }
+        if not dry_run and int(branch.get("records_ingested") or 0) == 0:
+            warnings.append(f"{source}: no new records in this run")
+        if float(branch.get("rejection_rate_pct") or 0) > 0:
+            warnings.append(f"{source}: {branch.get('rejection_rate_pct')}% of records quarantined")
 
-        source = res.get("source", "unknown")
-        entity = res.get("entity", "unknown")
-        status = res.get("status", "unknown")
-        silver_count = int(res.get("silver_row_count") or res.get("valid_count") or 0)
-        loaded_count = int(res.get("deduped_row_count") or res.get("silver_row_count") or 0)
+    missing = mandatory - {b.get("source") for b in branches}
+    for source in sorted(missing):
+        failed.append({"source": source, "error": "MissingBranch", "cause": "no result for a mandatory source"})
 
-        sources_evaluated += 1
-        total_silver += silver_count
-        total_loaded += loaded_count
+    if not dry_run:
+        from src.monitoring.cloudwatch import emit_run_summary
 
-        if status not in ("success", "skipped", "dry_run"):
-            discrepancies.append({
-                "source": source,
-                "entity": entity,
-                "issue": f"Non-success terminal status: {status}",
-            })
-        elif silver_count != loaded_count:
-            # Note: deduped count may be less than silver count if duplicate keys exist
-            logger.info(
-                "%s/%s silver count (%d) differs from loaded count (%d) due to deduplication",
-                source, entity, silver_count, loaded_count,
-            )
+        emit_run_summary(len(summary), len(failed), records, run_id=run_id)
 
-    has_critical_failure = any("Non-success terminal status" in d.get("issue", "") for d in discrepancies)
-    reconciliation_status = "FAILED" if has_critical_failure else "PASSED"
+    mandatory_failed = [f for f in failed if f["source"] in mandatory]
+    if mandatory_failed:
+        names = ", ".join(f["source"] for f in mandatory_failed)
+        raise ReconciliationFailed(f"run {run_id}: mandatory source(s) failed: {names}; details={mandatory_failed}")
 
-    # Emit CloudWatch audit metric
-    try:
-        from src.monitoring.cloudwatch import _emit_metric
-        _emit_metric(
-            metric_name="ReconciliationStatus",
-            value=1.0 if reconciliation_status == "PASSED" else 0.0,
-            unit="Count",
-            dimensions=[
-                {"Name": "Environment", "Value": environment},
-                {"Name": "Status", "Value": reconciliation_status},
-            ],
-        )
-    except Exception as exc:
-        logger.warning("Could not emit reconciliation CloudWatch metric (non-fatal): %s", exc)
-
+    warnings.extend(f"{f['source']} failed (not mandatory): {f['error']}" for f in failed)
+    status = "PASSED_WITH_WARNINGS" if failed or warnings else "PASSED"
     result = {
         "run_id": run_id,
-        "reconciliation_status": reconciliation_status,
-        "total_sources_evaluated": sources_evaluated,
-        "total_silver_records": total_silver,
-        "total_loaded_records": total_loaded,
-        "discrepancies": discrepancies,
-        "status": "success" if reconciliation_status == "PASSED" else "failed",
+        "reconciliation_status": status,
+        "failed_sources": [f["source"] for f in failed],
+        "warnings": warnings,
+        "summary": summary,
     }
-
-    if reconciliation_status == "FAILED":
-        logger.error("Reconciliation failed for run_id=%s: %s", run_id, discrepancies)
-    else:
-        logger.info("Reconciliation passed for run_id=%s: %s", run_id, result)
-
+    logger.info("Reconcile complete: %s", result)
     return result

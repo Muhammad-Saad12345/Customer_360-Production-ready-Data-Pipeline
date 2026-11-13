@@ -7,11 +7,8 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
-import types
 import unittest
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Helper: reload cloudwatch module under a controlled environment
