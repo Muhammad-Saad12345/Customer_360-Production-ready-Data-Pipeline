@@ -34,3 +34,21 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "alert_topic_arn" {
+  description = "SNS topic that receives execution-failure events and alarms"
+  type        = string
+  default     = ""
+}
+
+variable "permissions_boundary_arn" {
+  description = "ARN of the c360-workload-boundary policy"
+  type        = string
+  default     = ""
+}
+
+variable "log_retention_days" {
+  description = "Retention for execution logs"
+  type        = number
+  default     = 30
+}

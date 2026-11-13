@@ -37,7 +37,7 @@ class SecretsManager:
         client: Optional[Any] = None,
         auto_load: Optional[bool] = None,
     ):
-        self.secret_name = secret_name or os.getenv("SECRETS_MANAGER_SECRET_NAME", DEFAULT_SECRET_NAME)
+        self.secret_name = secret_name if secret_name is not None else os.getenv("SECRETS_MANAGER_SECRET_NAME", DEFAULT_SECRET_NAME)
         self.region_name = region_name or os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION))
         self._client = client
         self._cached_secrets: Dict[str, str] = {}
@@ -65,6 +65,10 @@ class SecretsManager:
     def load_secrets_from_aws(self, force_refresh: bool = False) -> Dict[str, str]:
         """Fetch and decrypt secret payload from AWS Secrets Manager."""
         if self._loaded_from_aws and not force_refresh:
+            return self._cached_secrets
+        if not self.secret_name:
+            # No shared legacy secret configured (prod uses per-source secrets only).
+            self._loaded_from_aws = True
             return self._cached_secrets
 
         try:

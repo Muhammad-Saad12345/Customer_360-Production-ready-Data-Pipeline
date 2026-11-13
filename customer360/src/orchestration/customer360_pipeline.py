@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Iterable, List
+from typing import Callable, List
 
 from src.checkpoint import CheckpointStore
 from src.ingestion.hubspot import HubSpotIngest

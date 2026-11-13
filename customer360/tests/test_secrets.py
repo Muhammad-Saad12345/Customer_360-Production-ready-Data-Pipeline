@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from src.config.secrets import (
-    DEFAULT_SECRET_NAME,
     SecretResolutionError,
     SecretsManager,
-    get_secret,
 )
 
 

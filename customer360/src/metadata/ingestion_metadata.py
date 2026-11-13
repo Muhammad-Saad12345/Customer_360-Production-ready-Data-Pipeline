@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from dataclasses import asdict, dataclass
 from typing import Optional
-import uuid
 
 from src.storage.s3_client import default_s3_client
 

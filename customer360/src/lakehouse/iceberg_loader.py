@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import boto3
-try:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-except ImportError:
-    import subprocess
-    import sys
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow>=14.0.0"])
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except Exception:
-        pa = None
-        pq = None
-from botocore.exceptions import ClientError
+
+# pyarrow is packaged into the Lambda zip (scripts/package_artifacts.py).
+# Installing packages at runtime from a Lambda is slow, needs internet access and
+# is not reproducible, so a missing pyarrow is now an import error.
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.lakehouse.athena_client import AthenaClient
 from src.lakehouse.config import LakehouseConfig, get_lakehouse_config
@@ -30,7 +21,6 @@ from src.lakehouse.table_definitions import (
     TableDefinition,
     generate_athena_add_column_ddl,
     generate_athena_create_table_ddl,
-    generate_athena_merge_query,
     generate_athena_merge_values_query,
     get_table_definition,
 )
@@ -42,7 +32,7 @@ class IcebergLoader:
     """
     Controlled conversion and loading process for transitioning validated Silver Parquet
     outputs into AWS-native Apache Iceberg tables registered in AWS Glue Data Catalog.
-    
+
     Guarantees:
     1. Zero duplication of business keys on repeated runs (Strict Idempotency via MERGE).
     2. Automatic schema evolution handling for new validated attributes.
@@ -121,9 +111,15 @@ class IcebergLoader:
                     return key
         return None
 
-    def read_silver_parquet_data(self, source: str, entity: str, run_id: str) -> Tuple[List[Dict[str, Any]], pa.Schema]:
-        """Fetch and parse Silver parquet records and schema from S3."""
-        key = self.locate_silver_parquet_key(source, entity, run_id)
+    def read_silver_parquet_data(
+        self, source: str, entity: str, run_id: str, silver_key: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], pa.Schema]:
+        """Fetch and parse Silver parquet records and schema from S3.
+
+        ``silver_key`` (passed from the SilverGate step) avoids listing the whole
+        silver/<source>/<entity>/ history on every run.
+        """
+        key = silver_key or self.locate_silver_parquet_key(source, entity, run_id)
         if not key:
             logger.warning("No Silver parquet found for %s/%s with run_id=%s", source, entity, run_id)
             return [], pa.schema([])
@@ -224,6 +220,7 @@ class IcebergLoader:
         entity: str,
         run_id: str,
         dry_run: bool = False,
+        silver_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Controlled conversion and idempotent load of a validated Silver Parquet run into Iceberg.
@@ -236,7 +233,7 @@ class IcebergLoader:
         self.ensure_iceberg_table(source, entity)
 
         # 2. Read Silver Parquet output
-        silver_rows, parquet_schema = self.read_silver_parquet_data(source, entity, run_id)
+        silver_rows, parquet_schema = self.read_silver_parquet_data(source, entity, run_id, silver_key=silver_key)
         input_count = len(silver_rows)
         if input_count == 0:
             logger.info("No Silver records to promote for %s/%s run_id=%s", source, entity, run_id)
@@ -323,7 +320,6 @@ class IcebergLoader:
                         for c in cols_raw:
                             if isinstance(c, dict) and "Name" in c:
                                 live_all_cols.add(c["Name"])
-            silver_col_names = {field.name for field in parquet_schema}
             type_mapping_eff = {
                 pa.string(): "string", pa.int64(): "bigint", pa.int32(): "int",
                 pa.float64(): "double", pa.float32(): "float", pa.bool_(): "boolean",
@@ -360,8 +356,7 @@ class IcebergLoader:
             for i in range(0, len(deduped_rows), BATCH_SIZE)
         ]
 
-        athena_success = False
-        error_msg = ""
+        completed_batches = 0
         try:
             for idx, batch in enumerate(batches):
                 merge_query = generate_athena_merge_values_query(
@@ -370,26 +365,32 @@ class IcebergLoader:
                     database_name=self.config.database_name,
                 )
                 self.athena.execute_query(merge_query)
+                completed_batches += 1
                 logger.info(
                     "Iceberg MERGE batch %d/%d complete for '%s' run_id=%s (%d rows)",
                     idx + 1, len(batches), effective_table_def.table_name, run_id, len(batch),
                 )
-            athena_success = True
-            logger.info(
-                "Successfully loaded %d records into '%s' run_id=%s",
-                len(deduped_rows), effective_table_def.table_name, run_id,
-            )
         except Exception as e:
-            error_msg = str(e)
+            # Never report success when the MERGE failed (it used to be swallowed).
+            # MERGE is idempotent on the primary key, so a retry of the whole step is safe.
+            message = str(e)
             logger.error(
-                "Athena MERGE INTO failed for '%s' run_id=%s: %s",
-                effective_table_def.table_name, run_id, error_msg,
+                "Athena MERGE INTO failed for '%s' run_id=%s after %d/%d batches: %s",
+                effective_table_def.table_name, run_id, completed_batches, len(batches), message,
             )
+            from src.errors import TransientError
+
+            if any(token in message for token in ("TooManyRequests", "Throttl", "Rate exceeded", "SlowDown")):
+                raise TransientError(f"Athena throttled during MERGE into {effective_table_def.table_name}: {message}") from e
+            raise RuntimeError(f"Athena MERGE into {effective_table_def.table_name} failed: {message}") from e
+        athena_success = True
+        logger.info("Successfully loaded %d records into '%s' run_id=%s", len(deduped_rows), effective_table_def.table_name, run_id)
 
         return {
             "status": "success",
             "athena_executed": athena_success,
-            "error_note": error_msg if not athena_success else None,
+            "loaded_row_count": len(deduped_rows),
+            "error_note": None,
             "table_name": table_def.table_name,
             "source": source,
             "entity": entity,

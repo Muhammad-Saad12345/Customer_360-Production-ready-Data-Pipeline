@@ -1,36 +1,15 @@
 """
-Lambda handler: silver_gate
-Step Functions state: SilverGate_{source}
+Lambda handler: silver_gate  (state SilverGate)
 
-Validates raw records against schema contracts, routes invalid records
-to quarantine, and writes valid records as Parquet to the silver zone.
-Extracted from customer360_batch._silver_gate() without Airflow XCom.
+Input:  {"run_id", "source", "entity", "environment", "dry_run", "s3_raw_key"}
+Output: {"valid_count", "invalid_count", "input_record_count", "silver_path", "quarantine_path", "status"}
 
-Input event:
-{
-    "run_id": "c360-...",
-    "source": "hubspot",
-    "entity": "contacts",
-    "environment": "staging"
-}
-
-Output:
-{
-    "run_id": "c360-...",
-    "source": "hubspot",
-    "entity": "contacts",
-    "input_record_count": 50,
-    "valid_count": 48,
-    "invalid_count": 2,
-    "silver_path": "s3://c360-bucket786/silver/hubspot/contacts/c360-.../data.parquet",
-    "quarantine_path": "s3://c360-bucket786/quarantine/hubspot/contacts/c360-.../rejected.json",
-    "status": "success"
-}
+Validates the exact raw object written by this run's ingest step, writes
+valid rows to silver/ (Parquet) and rejected rows to quarantine/.
 """
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict
 
 logger = logging.getLogger()
@@ -38,31 +17,30 @@ logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """Entry point for the Silver Gate Lambda."""
     source: str = event["source"]
     entity: str = event["entity"]
     run_id: str = event["run_id"]
-    environment: str = event.get("environment", os.environ.get("ENVIRONMENT", "staging"))
+    raw_key: str = event.get("s3_raw_key") or ""
+    dry_run: bool = bool(event.get("dry_run", False))
+    base = {"run_id": run_id, "source": source, "entity": entity}
 
-    logger.info("SilverGate: source=%s entity=%s run_id=%s", source, entity, run_id)
-    os.environ["ENVIRONMENT"] = environment
+    if dry_run or not raw_key:
+        status = "dry_run" if dry_run else "no_data"
+        logger.info("SilverGate %s for %s/%s", status, source, entity)
+        return {**base, "status": status, "input_record_count": 0, "valid_count": 0, "invalid_count": 0,
+                "silver_path": "", "quarantine_path": ""}
 
     from src.processing.silver_gate import HubSpotSilverProcessor
 
-    processor = HubSpotSilverProcessor()
-    summary = processor.process_records(source=source, entity=entity, run_id=run_id)
-
+    summary = HubSpotSilverProcessor().process_records(source=source, entity=entity, run_id=run_id, raw_key=raw_key)
     result = {
-        "run_id": run_id,
-        "source": source,
-        "entity": entity,
-        "input_record_count": summary.get("input_record_count", 0),
-        "valid_count": summary.get("valid_count", 0),
-        "invalid_count": summary.get("invalid_count", 0),
-        "silver_path": summary.get("silver_path", ""),
-        "quarantine_path": summary.get("quarantine_path", ""),
+        **base,
         "status": "success",
+        "input_record_count": summary["input_record_count"],
+        "valid_count": summary["valid_count"],
+        "invalid_count": summary["invalid_count"],
+        "silver_path": summary.get("silver_path") or "",
+        "quarantine_path": summary.get("quarantine_path") or "",
     }
-
     logger.info("SilverGate complete: %s", result)
     return result

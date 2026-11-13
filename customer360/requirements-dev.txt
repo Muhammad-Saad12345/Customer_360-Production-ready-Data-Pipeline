@@ -1,0 +1,16 @@
+# Everything CI needs to lint and run the unit/contract tests (no Airflow: the
+# DAG tests read the DAG files as text). The Lambda runtime dependencies are
+# pinned separately in scripts/package_artifacts.py.
+boto3>=1.34
+requests>=2.32
+tenacity>=8.2
+pyarrow>=20.0.0
+python-dotenv>=1.0
+fastapi>=0.110
+httpx>=0.27
+pydantic>=2.6
+uvicorn>=0.29
+pytest>=8.0
+moto[s3,sns,cloudwatch,secretsmanager,stepfunctions]>=5.1,<6
+duckdb>=1.1
+ruff==0.17.4

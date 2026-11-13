@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 BATCH_DAG_FILE = ROOT / "dags" / "customer360_batch.py"
 HOURLY_DAG_FILE = ROOT / "dags" / "customer360_hourly.py"

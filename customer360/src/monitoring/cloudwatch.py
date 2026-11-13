@@ -102,6 +102,20 @@ def _build_datum(
     return datum
 
 
+def _with_environment_rollup(data: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add an Environment-only copy of each datum.
+
+    CloudWatch treats every dimension combination as a separate metric and does
+    not aggregate across them, so alarms that watch the whole environment
+    (DQGateFailed, RejectionRate, ValidRecordCount) need this rollup copy.
+    """
+    out: List[Dict[str, Any]] = list(data)
+    for datum in data:
+        if len(datum.get("Dimensions", [])) > 1:
+            out.append({**datum, "Dimensions": _dimensions()})
+    return out
+
+
 def _put(metric_data: Sequence[Dict[str, Any]]) -> None:
     """Push up to 20 metrics per call (CloudWatch limit is 1000 but keep batches small)."""
     client = _client()
@@ -156,7 +170,7 @@ def emit_dq_metrics(
         _build_datum("InvalidRecordCount", float(invalid_count), "Count", dims, ts),
         _build_datum("RejectionRate", rejection_rate_pct, "Percent", dims, ts),
     ]
-    _put(data)
+    _put(_with_environment_rollup(data))
     logger.info(
         "DQ metrics emitted [%s/%s] input=%d valid=%d invalid=%d rejection=%.2f%%  run_id=%s",
         source, entity, input_count, valid_count, invalid_count, rejection_rate_pct, run_id,
@@ -226,12 +240,24 @@ def emit_dq_gate_verdict(
         _build_datum(metric_name, 1.0, "Count", dims, ts),
         _build_datum("RejectionRate", rejection_rate_pct, "Percent", dims, ts),
     ]
-    _put(data)
+    _put(_with_environment_rollup(data))
     verdict = "PASSED" if passed else "FAILED"
     logger.info(
         "DQ gate verdict emitted [%s/%s] %s  rejection=%.2f%%  run_id=%s",
         source, entity, verdict, rejection_rate_pct, run_id,
     )
+
+
+def emit_run_summary(sources_succeeded: int, sources_failed: int, records_ingested: int, run_id: Optional[str] = None) -> None:
+    """Environment-level counters written once per run by the reconcile step."""
+    dims = _dimensions()
+    ts = datetime.now(timezone.utc)
+    _put([
+        _build_datum("SourcesSucceeded", float(sources_succeeded), "Count", dims, ts),
+        _build_datum("SourcesFailed", float(sources_failed), "Count", dims, ts),
+        _build_datum("RunRecordsIngested", float(records_ingested), "Count", dims, ts),
+    ])
+    logger.info("Run summary emitted ok=%d failed=%d records=%d run_id=%s", sources_succeeded, sources_failed, records_ingested, run_id)
 
 
 def emit_pipeline_health(overall_status: str, error_count: int, warning_count: int) -> None:

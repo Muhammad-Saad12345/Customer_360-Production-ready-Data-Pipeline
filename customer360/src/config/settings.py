@@ -85,19 +85,19 @@ def get_settings() -> Settings:
 
     # Environment-specific defaults (reconciled with verified live AWS infrastructure)
     if env in ("prod", "production"):
-        default_bucket = os.getenv("S3_BUCKET", "c360-bucket786")
-        default_db = os.getenv("ICEBERG_DATABASE", "customer360_iceberg")
-        default_wg = os.getenv("ATHENA_WORKGROUP", "primary")
+        default_bucket = "c360-prod-lakehouse"
+        default_db = "customer360_prod"
+        default_wg = "customer360-prod"
     elif env in ("staging", "stage"):
         default_bucket = "c360-bucket786"               # real deployed bucket
         default_db = "customer360_iceberg_stage"        # isolated live staging database
         default_wg = "customer360-staging"              # isolated live staging workgroup
-        os.environ.setdefault("ALLOW_SYNTHETIC_FALLBACK", "true")
     else:  # dev / test
         default_bucket = os.getenv("S3_BUCKET", "c360-bucket786")
         default_db = os.getenv("ICEBERG_DATABASE", "customer360_iceberg_stage")
         default_wg = os.getenv("ATHENA_WORKGROUP", "customer360-staging")
-        os.environ.setdefault("ALLOW_SYNTHETIC_FALLBACK", "true")
+    # Synthetic data is never an implicit fallback any more: each source's mode
+    # is explicit (C360_SOURCE_MODES, see src/ingestion/source_mode.py).
 
     # Allow explicit override from environment if provided (e.g. existing c360-bucket786 in .env)
     s3_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_S3_BUCKET") or default_bucket

@@ -2,32 +2,29 @@ from __future__ import annotations
 
 import io
 import unittest
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.lakehouse.athena_client import AthenaClient, AthenaQueryExecutionError, AthenaQueryResult
-from src.lakehouse.config import LakehouseConfig, get_lakehouse_config
+from src.lakehouse.athena_client import (
+    AthenaClient,
+    AthenaQueryExecutionError,
+)
+from src.lakehouse.config import LakehouseConfig
 from src.lakehouse.glue_catalog import GlueIcebergCatalog
 from src.lakehouse.iceberg_loader import IcebergLoader
 from src.lakehouse.table_definitions import (
     HUBSPOT_CONTACTS_TABLE,
-    LOYALTY_TABLE,
-    MARKETING_EVENTS_TABLE,
     OMS_ORDERS_TABLE,
     PIM_PRODUCTS_TABLE,
-    TABLE_REGISTRY,
     ColumnDefinition,
-    TableDefinition,
     generate_athena_add_column_ddl,
     generate_athena_create_table_ddl,
     generate_athena_merge_query,
-    get_all_table_definitions,
     get_table_definition,
 )
-from src.lakehouse.validator import IcebergValidator, ValidationReport
+from src.lakehouse.validator import IcebergValidator
 
 
 class TestIcebergTableDefinitions(unittest.TestCase):

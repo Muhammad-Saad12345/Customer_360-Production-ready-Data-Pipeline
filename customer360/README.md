@@ -3,6 +3,18 @@
 
 ---
 
+## Production deployment (start here)
+
+Production runs on AWS Step Functions + Lambda + Glue (dbt) + Athena/Iceberg,
+deployed by `.github/workflows/ci.yml` with GitHub OIDC. Read in this order:
+
+1. [Manual AWS setup](docs/MANUAL_AWS_SETUP_GUIDE.md): the one-time human steps (M1–M11)
+2. [Deployment runbook](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md): phases A–G and their gates
+3. [Permissions](docs/PRODUCTION_PERMISSIONS_GUIDE.md) · [Readiness checklist](docs/PRODUCTION_READINESS_CHECKLIST.md) · [Rollback](docs/ROLLBACK_AND_RECOVERY_GUIDE.md) · [OMS/PIM API](docs/OMS_PIM_API_INTEGRATION_GUIDE.md)
+
+Each source runs in an explicit mode (`api`, `mock_api`, `synthetic`, `dataset`);
+there is no silent fallback to synthetic data.
+
 ## 1. Overview
 
 This repository provides a production-grade, ACID-compliant **Customer 360 Data Lakehouse** pipeline. It extracts data across multiple authoritative source systems, lands immutable raw payloads in Amazon S3, validates and quarantines records via a Silver Quality Gate, and promotes clean records into Apache Iceberg tables registered in AWS Glue Data Catalog and queryable via Amazon Athena Engine v3.
@@ -88,7 +100,7 @@ uv run python src/main.py iceberg-load
 # Live S3 Acceptance Check
 uv run python scripts/live_acceptance_check.py
 
-# Full test suite (211 unit and integration tests)
+# Full test suite (runs against moto; no AWS account needed)
 uv run pytest
 ```
 

@@ -85,7 +85,7 @@ support_summary as (
         count(distinct s.ticket_id) as total_support_tickets,
         count(distinct case when s.ticket_status in ('new', 'open', 'pending', 'hold') then s.ticket_id end) as open_support_tickets,
         count(distinct case when s.ticket_status in ('solved', 'closed') then s.ticket_id end) as resolved_support_tickets,
-        avg(case when s.csat_rating > 0 then s.csat_rating else null end) as avg_csat_score
+        avg(s.csat_rating) as avg_csat_score
     from bridge b
     join {{ ref('stg_zendesk_tickets') }} s
         on b.source_system = 'zendesk' and b.source_customer_id = s.customer_id
@@ -135,7 +135,7 @@ golden_customer as (
         coalesce(sup.total_support_tickets, 0) as total_support_tickets,
         coalesce(sup.open_support_tickets, 0) as open_support_tickets,
         coalesce(sup.resolved_support_tickets, 0) as resolved_support_tickets,
-        coalesce(sup.avg_csat_score, 0.0) as average_csat_score,
+        sup.avg_csat_score as average_csat_score,  -- NULL when the customer never rated
 
         -- Survivorship Metadata
         'CRM:HubSpot;Loyalty:Loyalty;Orders:OMS;Marketing:Mailchimp;Support:Zendesk' as survivorship_authority_manifest,
