@@ -78,7 +78,12 @@ aws iam simulate-principal-policy \
 
 * IAM Access Analyzer policy validation has not been run on these policies;
   run `aws accessanalyzer validate-policy` on the rendered JSON after M3.
-* `cloudwatch:PutMetricData`, `logs:DescribeLogGroups`, `xray:*` and a few
-  `List*` calls have no resource-level permissions and use `*`.
+* `cloudwatch:PutMetricData`, `cloudwatch:DescribeAlarms`, the CloudWatch
+  log-delivery actions (`logs:CreateLogDelivery` and related, needed by
+  whoever creates a state machine with logging), `xray:*` and a few `List*`
+  calls have no resource-level permissions and use `*`.
+* The deploy roles cannot modify roles without the boundary. This is why the
+  first staging apply (migrating roles from the old `iam` module) is done by
+  c360-admin (M6).
 * The plan role can list (not read) object keys in the lakehouse buckets,
   because `HeadBucket` needs `s3:ListBucket`.

@@ -8,6 +8,17 @@ Run the CLI steps in **AWS CloudShell** (Console, top bar, the `>_` icon) in
 `us-east-1`. CloudShell uses the identity you signed in with, so no access keys
 are created or typed anywhere.
 
+**Check before and after every step** with the read-only doctor script. It
+prints PASS/WARN/FAIL and, for each FAIL, the command that fixes it:
+
+```bash
+bash scripts/aws_doctor.sh account        # identity, OIDC, state buckets, bootstrap roles, legacy roles, Lake Formation
+bash scripts/aws_doctor.sh env staging    # after a staging deploy
+```
+
+After bootstrap, GitHub can run the same check: Actions → *AWS environment
+check* → *Run workflow* (it also runs daily at 08:17 PKT against staging).
+
 Order: **M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8**, then the runbook
 (`PRODUCTION_DEPLOYMENT_RUNBOOK.md`). M9–M11 retire the old credentials once
 the new path works.
@@ -19,7 +30,7 @@ the new path works.
 | M3 | Apply `terraform/bootstrap` | c360-admin | No (imports the staging state bucket) |
 | M4 | Configure GitHub environments and variables | GitHub owner | No |
 | M5 | Review the first staging plan | c360-admin | **Review destroys** |
-| M6 | First staging deploy (CI) | GitHub | Only what M5 approved |
+| M6 | First staging apply (migration) as c360-admin, then CI | c360-admin, then GitHub | Only what M5 approved |
 | M7 | Confirm the alert email subscription and test it | mailbox + c360-admin | No |
 | M8 | Source secrets (only for sources that go to `api` mode) | c360-admin | No |
 | M9 | MFA + profile for the operator user `C360` | C360 | No |
@@ -219,12 +230,45 @@ Decide for every destroy line:
 
 ---
 
-## M6. First staging deploy
+## M6. First staging apply (migration), then hand over to CI
 
-Merge the PR (or run the workflow manually: Actions → *Customer 360 CI/CD* →
-*Run workflow* → `staging`). The `deploy-staging` job uploads the artifacts,
-applies Terraform with the reviewed plan shape and starts a **dry-run**
-execution. It fails the job if the dry run does not succeed.
+**Why the first apply is done by you, not CI:** the CI deploy role may only
+change or delete roles that carry `c360-workload-boundary`. Roles created by
+the old `iam` module do not have it, so CI cannot detach their policies and the
+first apply would stop with `AccessDenied`. That limit is deliberate (it is
+what stops CI from ever editing an unbounded role), so the one-time migration
+runs as c360-admin with the plan you reviewed in M5. Every later deploy is CI.
+
+```bash
+# 1. build and upload the artifacts for the commit you are deploying
+cd ~/c360 && git pull && cd customer360
+VERSION=$(git rev-parse --short=12 HEAD)
+python3 scripts/package_artifacts.py --version "$VERSION"
+aws s3 sync build/artifacts/ s3://c360-bucket786/artifacts/ --only-show-errors
+
+# 2. apply exactly what M5 showed (re-plan with the real version, re-check destroys)
+cd terraform/environments/staging
+terraform init
+terraform plan -out=migrate.plan -var "artifact_version=$VERSION" \
+  -var 'alert_email_addresses=["datawithsaad97531786@gmail.com"]'
+terraform show -no-color migrate.plan | grep -E '(will be destroyed|must be replaced)'
+terraform apply migrate.plan
+
+# 3. dry run + resource check
+cd ../.. && bash scripts/smoke_dry_run.sh "$(terraform -chdir=terraform/environments/staging output -raw state_machine_arn)"
+bash scripts/aws_doctor.sh env staging
+```
+
+Then hand over to CI: merge the PR (or Actions → *Customer 360 CI/CD* → *Run
+workflow* → `staging`). The CI plan for the same commit should show only the
+artifact version change, which proves the deploy role can manage everything.
+
+| Error during the migration apply | Fix |
+|---|---|
+| `DeleteConflict` deleting an old role | the role is still attached somewhere (instance profile, other function); `aws iam list-instance-profiles-for-role --role-name <r>` |
+| `ResourceConflictException` / `already exists` | the resource exists but is not in state; import it (`terraform import <address> <id>`) instead of deleting it |
+| `AccessDeniedException ... log destination` on the state machine | the execution role's log-delivery policy has not propagated yet; re-run `terraform apply` after a minute |
+| `NoSuchKey` for a Lambda zip | step 1 did not upload `artifacts/$VERSION/`; re-run the sync |
 
 Verify:
 

@@ -65,6 +65,9 @@ jobs:
       - name: Bandit (medium and above fail the build)
         run: bandit -r src/ lambda_handlers/ glue_jobs/ -ll -ii
 
+      - name: Shell scripts
+        run: shellcheck -S warning scripts/*.sh
+
       - name: Unit, contract and local end-to-end tests (moto, no AWS)
         run: python -m pytest -q
 
@@ -178,6 +181,14 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
+      - name: Check AWS configuration
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN is not set on this GitHub environment. Apply terraform/bootstrap and set the variables (docs/MANUAL_AWS_SETUP_GUIDE.md M3-M4)."
+            exit 1
+          fi
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -202,6 +213,8 @@ jobs:
         run: |
           SM=$(terraform -chdir="$TF_DIR" output -raw state_machine_arn)
           bash scripts/smoke_dry_run.sh "$SM"
+      - name: Verify deployed resources
+        run: bash scripts/aws_doctor.sh env staging
 
   # ── 5. Production: manual, main only, reviewer approval ────────────────────
   deploy-prod:
@@ -229,6 +242,14 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
+      - name: Check AWS configuration
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN is not set on this GitHub environment. Apply terraform/bootstrap and set the variables (docs/MANUAL_AWS_SETUP_GUIDE.md M3-M4)."
+            exit 1
+          fi
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -259,3 +280,5 @@ jobs:
         run: |
           SM=$(terraform -chdir="$TF_DIR" output -raw state_machine_arn)
           bash scripts/smoke_dry_run.sh "$SM"
+      - name: Verify deployed resources
+        run: bash scripts/aws_doctor.sh env prod

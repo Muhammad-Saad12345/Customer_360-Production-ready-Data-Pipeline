@@ -163,9 +163,16 @@ locals {
         ]
       },
       {
-        Sid      = "LogsNoResourceLevel"
-        Effect   = "Allow"
-        Action   = ["logs:DescribeLogGroups"]
+        # CreateStateMachine/UpdateStateMachine with a logging configuration set up
+        # CloudWatch vended-log delivery as the caller; these actions have no
+        # resource-level permissions (Step Functions developer guide, cw-logs).
+        Sid    = "LogsNoResourceLevel"
+        Effect = "Allow"
+        Action = [
+          "logs:DescribeLogGroups", "logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies",
+          "cloudwatch:DescribeAlarms"
+        ]
         Resource = "*"
       },
       {

@@ -20,9 +20,11 @@ Do M1–M4.
 `terraform/bootstrap` prints five role/policy ARNs; GitHub variables set.
 
 ## B. Staging infrastructure
-Do M5 (review destroys), then M6 (merge → `deploy-staging`).
+Do M5 (review destroys), then M6 (one migration apply as c360-admin, then
+merge → `deploy-staging`).
 **Gate:** the `deploy-staging` job is green, including *Smoke test (dry-run
-execution)*; the schedule is `DISABLED`.
+execution)* and *Verify deployed resources* (`aws_doctor.sh env staging`, 0 FAIL);
+the schedule is `DISABLED`.
 
 ## C. Alerts
 Do M7.

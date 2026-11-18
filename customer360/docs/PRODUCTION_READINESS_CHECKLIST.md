@@ -101,6 +101,18 @@ Limitation: email delivery is verified only by M7.
 
 **F20 dbt runner extraction** · implemented, tested — archive members validated (no `../`, links); temp dir via `mkdtemp`. Test: `test_dbt_runner_extract.py`.
 
+**F25 Deploy role could not create a logged state machine** · implemented, validated
+Root cause: creating or updating a state machine with a logging configuration needs `logs:CreateLogDelivery` and related actions on `*` for the caller; the deploy role only had `logs:DescribeLogGroups`.
+Change: added to `bootstrap/modules/deploy_role` (plus `cloudwatch:DescribeAlarms` for the post-deploy check).
+
+**F26 First CI apply would stop on legacy roles** · documented
+Root cause: the deploy role (correctly) cannot detach policies from roles without the boundary, and the old `iam` module's roles have none.
+Change: M6 makes the one-time migration apply a reviewed c360-admin step; `aws_doctor.sh account` lists every legacy role without the boundary.
+
+**F27 No way to confirm AWS state** · implemented
+Root cause: `test-aws-oidc.yml` only called `get-caller-identity`, and every run since 21 Oct failed: `GitHubActionsStagingRole` does not trust this repository's OIDC subject.
+Change: `scripts/aws_doctor.sh` (read-only PASS/WARN/FAIL with fix commands); `.github/workflows/aws-verify.yml` runs it with the deploy role on demand and daily; every deploy job runs it after the smoke test; deploy jobs stop early with a clear message if the role variable is missing.
+
 ## dbt models
 
 **F21 dbt could never run on Glue** · implemented, tested

@@ -1,0 +1,55 @@
+name: AWS environment check
+
+# Read-only. Assumes the environment's deploy role through GitHub OIDC and runs
+# customer360/scripts/aws_doctor.sh, which reports PASS/WARN/FAIL for every
+# resource the pipeline needs. Replaces test-aws-oidc.yml, which targeted the
+# retired GitHubActionsStagingRole and failed with "Not authorized to perform
+# sts:AssumeRoleWithWebIdentity".
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to check"
+        type: choice
+        options: [staging, production]
+        default: staging
+  schedule:
+    - cron: "17 3 * * *"   # daily staging check, 08:17 Karachi time
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  verify:
+    # the scheduled run starts only once bootstrap is done (AWS_PLAN_ROLE_ARN set)
+    if: github.event_name == 'workflow_dispatch' || vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'staging' }}
+    defaults:
+      run:
+        working-directory: customer360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check AWS configuration
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN is not set on this environment (docs/MANUAL_AWS_SETUP_GUIDE.md M4)."
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - name: Who am I
+        run: aws sts get-caller-identity --query Arn --output text
+      - name: Resource checks
+        run: |
+          ENV=${{ inputs.environment || 'staging' }}
+          [ "$ENV" = production ] && ENV=prod
+          bash scripts/aws_doctor.sh env "$ENV" | tee doctor.txt
+          { echo '### AWS check'; echo '```'; cat doctor.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -q '^Summary: 0 FAIL' doctor.txt
