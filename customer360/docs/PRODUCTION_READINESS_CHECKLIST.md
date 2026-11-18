@@ -105,9 +105,10 @@ Limitation: email delivery is verified only by M7.
 Root cause: creating or updating a state machine with a logging configuration needs `logs:CreateLogDelivery` and related actions on `*` for the caller; the deploy role only had `logs:DescribeLogGroups`.
 Change: added to `bootstrap/modules/deploy_role` (plus `cloudwatch:DescribeAlarms` for the post-deploy check).
 
-**F26 First CI apply would stop on legacy roles** · documented
-Root cause: the deploy role (correctly) cannot detach policies from roles without the boundary, and the old `iam` module's roles have none.
-Change: M6 makes the one-time migration apply a reviewed c360-admin step; `aws_doctor.sh account` lists every legacy role without the boundary.
+**F26 First CI apply and legacy roles** · documented, checked in AWS
+The deploy role (correctly) cannot modify roles without the boundary. The 18 Nov audit found an empty staging state and no `c360-staging-*` roles, so CI can do the first apply (M6 path A); path B covers the case where such roles appear. `aws_doctor.sh account` reports which path applies.
+
+**F28 Live AWS audit** · checked (read-only) — see `AWS_ENVIRONMENT_AUDIT.md`: nothing deployed yet, bootstrap missing, a privilege-escalation path on user `C360`, four over-privileged legacy roles, checkpoints advanced by the old synthetic fallback.
 
 **F27 No way to confirm AWS state** · implemented
 Root cause: `test-aws-oidc.yml` only called `get-caller-identity`, and every run since 21 Oct failed: `GitHubActionsStagingRole` does not trust this repository's OIDC subject.

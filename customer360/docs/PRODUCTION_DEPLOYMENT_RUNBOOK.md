@@ -15,7 +15,8 @@ SM_STG=$(aws stepfunctions list-state-machines --query "stateMachines[?name=='c3
 ```
 
 ## A. Identity and bootstrap
-Do M1–M4.
+Do M1, then the cleanup C1 in `AWS_ENVIRONMENT_AUDIT.md` (closes an
+escalation path on user `C360`), then M2–M4.
 **Gate:** `aws sts get-caller-identity` shows `c360-admin`; `terraform output` in
 `terraform/bootstrap` prints five role/policy ARNs; GitHub variables set.
 
@@ -60,7 +61,8 @@ for the test), run once, and confirm the `oms` and `pim` branches fail at
 merged for this run_id, and the failure email arrives. Set it back afterwards.
 
 ## E. Move sources to real data, one at a time
-For each source: create its secret (M8), change its mode to `"api"` (or
+For each source: **reset its checkpoint** (`AWS_ENVIRONMENT_AUDIT.md` C4; the
+11 Nov watermarks came from synthetic data), create its secret (M8), change its mode to `"api"` (or
 `"dataset"` for files under `s3://c360-bucket786/datasets/<source>/<entity>/`)
 in a PR, deploy, run, validate. OMS and PIM: follow
 `OMS_PIM_API_INTEGRATION_GUIDE.md` first.

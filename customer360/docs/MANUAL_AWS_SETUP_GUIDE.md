@@ -30,7 +30,7 @@ the new path works.
 | M3 | Apply `terraform/bootstrap` | c360-admin | No (imports the staging state bucket) |
 | M4 | Configure GitHub environments and variables | GitHub owner | No |
 | M5 | Review the first staging plan | c360-admin | **Review destroys** |
-| M6 | First staging apply (migration) as c360-admin, then CI | c360-admin, then GitHub | Only what M5 approved |
+| M6 | First staging deploy: CI (path A), or c360-admin if legacy roles exist (path B) | GitHub / c360-admin | Only what M5 approved |
 | M7 | Confirm the alert email subscription and test it | mailbox + c360-admin | No |
 | M8 | Source secrets (only for sources that go to `api` mode) | c360-admin | No |
 | M9 | MFA + profile for the operator user `C360` | C360 | No |
@@ -230,14 +230,22 @@ Decide for every destroy line:
 
 ---
 
-## M6. First staging apply (migration), then hand over to CI
+## M6. First staging deploy
 
-**Why the first apply is done by you, not CI:** the CI deploy role may only
-change or delete roles that carry `c360-workload-boundary`. Roles created by
-the old `iam` module do not have it, so CI cannot detach their policies and the
-first apply would stop with `AccessDenied`. That limit is deliberate (it is
-what stops CI from ever editing an unbounded role), so the one-time migration
-runs as c360-admin with the plan you reviewed in M5. Every later deploy is CI.
+Run `bash scripts/aws_doctor.sh account` and look at the section *Roles
+Terraform will manage*.
+
+**Path A — no `c360-staging-*` roles exist** (the case on 18 Nov 2026: the
+staging state is empty, see `AWS_ENVIRONMENT_AUDIT.md`). Merge the PR, or
+Actions → *Customer 360 CI/CD* → *Run workflow* → `staging`. CI uploads the
+artifacts, applies, runs a dry run and `aws_doctor.sh env staging`. Done; skip
+to *Verify* below.
+
+**Path B — such roles exist without the boundary.** The CI deploy role may only
+change or delete roles that carry `c360-workload-boundary`, so the first apply
+would stop with `AccessDenied`. That limit is deliberate (it stops CI from ever
+editing an unbounded role), so this one-time migration runs as c360-admin with
+the plan you reviewed in M5. Every later deploy is CI.
 
 ```bash
 # 1. build and upload the artifacts for the commit you are deploying

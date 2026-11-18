@@ -89,16 +89,32 @@ account_checks() {
   [ -n "$(q iam get-policy --policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/c360-workload-boundary" --query Policy.PolicyName)" ] \
     && pass "c360-workload-boundary exists" || fail "c360-workload-boundary missing" "terraform -chdir=terraform/bootstrap apply (M3)"
 
-  section "Legacy roles (must be removed or adopted before CI can manage staging)"
-  local roles; roles=$(q iam list-roles --query "Roles[?starts_with(RoleName,'c360-') || starts_with(RoleName,'customer360') || RoleName=='GitHubActionsStagingRole'].RoleName")
-  for r in $roles; do
-    case "$r" in c360-github-*|c360-operator) continue;; esac
+  section "Roles Terraform will manage (must carry the boundary)"
+  local all_roles; all_roles=$(q iam list-roles --query 'Roles[].RoleName')
+  local managed=0
+  for r in $all_roles; do
+    case "$r" in c360-staging-*|c360-prod-*) ;; *) continue;; esac
+    managed=$((managed + 1))
     local pb; pb=$(q iam get-role --role-name "$r" --query Role.PermissionsBoundary.PermissionsBoundaryArn)
-    local last; last=$(q iam get-role --role-name "$r" --query Role.RoleLastUsed.LastUsedDate)
     if [ -z "$pb" ] || [ "$pb" = "None" ]; then
-      warn "$r has no permissions boundary (last used ${last:-never})" "the first staging apply must run as c360-admin (M5/M6); CI cannot detach policies from it"
+      fail "$r has no permissions boundary" "CI cannot change it; delete it as c360-admin after checking RoleLastUsed, or do the first apply as c360-admin (M6)"
     else pass "$r has the boundary"; fi
   done
+  [ "$managed" -eq 0 ] && pass "no c360-staging-*/c360-prod-* roles yet (CI can do the first apply)"
+
+  section "Legacy principals (cleanup, M10-M11)"
+  for r in $all_roles; do
+    echo "$r" | grep -qiE '^(c360-|customer360|github-mwaa|githubactionsstagingrole)' || continue
+    case "$r" in c360-github-*|c360-operator|c360-staging-*|c360-prod-*) continue;; esac
+    local last; last=$(q iam get-role --role-name "$r" --query Role.RoleLastUsed.LastUsedDate)
+    local att; att=$(q iam list-attached-role-policies --role-name "$r" --query 'AttachedPolicies[].PolicyName')
+    warn "legacy role $r (last used ${last:-never}; attached: ${att:-none})" "see docs/AWS_ENVIRONMENT_AUDIT.md cleanup list"
+  done
+  local esc; esc=$(q iam list-user-policies --user-name C360 --query 'PolicyNames')
+  if echo "$esc" | grep -q Antigravity_grant_permission_for_autonomous_capability; then
+    fail "user C360 can edit C360-* role policies (privilege escalation via C360-Antigravity-DeployRole)" \
+      "aws iam delete-user-policy --user-name C360 --policy-name Antigravity_grant_permission_for_autonomous_capability"
+  fi
 
   section "Lake Formation"
   local admins; admins=$(q lakeformation get-data-lake-settings --query 'DataLakeSettings.DataLakeAdmins[].DataLakePrincipalIdentifier')

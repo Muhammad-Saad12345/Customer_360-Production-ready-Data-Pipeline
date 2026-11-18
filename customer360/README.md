@@ -10,7 +10,7 @@ deployed by `.github/workflows/ci.yml` with GitHub OIDC. Read in this order:
 
 1. [Manual AWS setup](docs/MANUAL_AWS_SETUP_GUIDE.md): the one-time human steps (M1–M11)
 2. [Deployment runbook](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md): phases A–G and their gates
-3. [Permissions](docs/PRODUCTION_PERMISSIONS_GUIDE.md) · [Readiness checklist](docs/PRODUCTION_READINESS_CHECKLIST.md) · [Rollback](docs/ROLLBACK_AND_RECOVERY_GUIDE.md) · [OMS/PIM API](docs/OMS_PIM_API_INTEGRATION_GUIDE.md)
+3. [AWS audit 18 Nov](docs/AWS_ENVIRONMENT_AUDIT.md) · [Permissions](docs/PRODUCTION_PERMISSIONS_GUIDE.md) · [Readiness checklist](docs/PRODUCTION_READINESS_CHECKLIST.md) · [Rollback](docs/ROLLBACK_AND_RECOVERY_GUIDE.md) · [OMS/PIM API](docs/OMS_PIM_API_INTEGRATION_GUIDE.md)
 
 Each source runs in an explicit mode (`api`, `mock_api`, `synthetic`, `dataset`);
 there is no silent fallback to synthetic data.
