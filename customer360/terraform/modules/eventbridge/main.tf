@@ -51,7 +51,7 @@ resource "aws_iam_role_policy" "scheduler_exec" {
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = [var.maintenance_lambda_arn, "${var.maintenance_lambda_arn}:*"]
-      }] : s if(var.maintenance_lambda_arn != "")]
+      }] : s if var.enable_maintenance_schedule]
     )
   })
 }
@@ -90,7 +90,7 @@ resource "aws_scheduler_schedule" "customer360_batch" {
 
 # Weekly Iceberg OPTIMIZE/VACUUM, outside the daily critical path (audit S10).
 resource "aws_scheduler_schedule" "iceberg_maintenance" {
-  count       = var.maintenance_lambda_arn != "" ? 1 : 0
+  count       = var.enable_maintenance_schedule ? 1 : 0
   name        = "${local.name_prefix}-weekly-iceberg-maintenance"
   description = "Weekly OPTIMIZE and VACUUM of the silver Iceberg tables"
   state       = var.schedule_enabled ? "ENABLED" : "DISABLED"

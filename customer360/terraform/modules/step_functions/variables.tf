@@ -41,6 +41,14 @@ variable "alert_topic_arn" {
   default     = ""
 }
 
+# count must be known at plan time; the topic ARN is not known until the
+# topic exists, so the on/off switch is a separate, static boolean.
+variable "enable_failure_alerts" {
+  description = "Send execution failures to alert_topic_arn"
+  type        = bool
+  default     = true
+}
+
 variable "permissions_boundary_arn" {
   description = "ARN of the c360-workload-boundary policy"
   type        = string

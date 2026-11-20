@@ -32,6 +32,14 @@ variable "maintenance_lambda_arn" {
   default     = ""
 }
 
+# count must be known at plan time; the Lambda ARN is not known until the
+# function exists, so the on/off switch is a separate, static boolean.
+variable "enable_maintenance_schedule" {
+  description = "Create the weekly Iceberg maintenance schedule (needs maintenance_lambda_arn)"
+  type        = bool
+  default     = true
+}
+
 variable "maintenance_schedule_expression" {
   description = "Schedule for Iceberg maintenance"
   type        = string

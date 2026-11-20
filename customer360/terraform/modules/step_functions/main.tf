@@ -146,7 +146,7 @@ resource "aws_cloudwatch_event_rule" "execution_failed" {
 }
 
 resource "aws_cloudwatch_event_target" "execution_failed_sns" {
-  count     = var.alert_topic_arn != "" ? 1 : 0
+  count     = var.enable_failure_alerts ? 1 : 0
   rule      = aws_cloudwatch_event_rule.execution_failed.name
   target_id = "sns-alert"
   arn       = var.alert_topic_arn
@@ -179,6 +179,6 @@ resource "aws_cloudwatch_metric_alarm" "executions_failed" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_description   = "Customer 360 ${var.environment} batch: ${each.key} >= 1 in the last hour"
-  alarm_actions       = var.alert_topic_arn != "" ? [var.alert_topic_arn] : []
+  alarm_actions       = var.enable_failure_alerts ? [var.alert_topic_arn] : []
   tags                = local.common_tags
 }
