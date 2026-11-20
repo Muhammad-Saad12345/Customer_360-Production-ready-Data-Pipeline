@@ -1,28 +1,41 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
-
 from src.config.settings import get_settings
 from src.ingestion.base import BaseIngest
+from src.ingestion.http_client import SourceHttpClient
+from src.ingestion.source_mode import load_source_credentials
+from src.ingestion.synthetic import include_invalid_synthetic
 
 
 class PimIngest(BaseIngest):
-    def __init__(self):
-        super().__init__(source="pim", object_name="products")
+    """Products. api = Shopify Admin GraphQL; mock_api = mock_sources/pim REST."""
+
+    watermark_fields = ["updated_at", "launch_date"]
+
+    def __init__(self, run_id: Optional[str] = None):
+        super().__init__(source="pim", object_name="products", run_id=run_id)
         self.settings = get_settings()
-        self.base_url = self.settings.PIM_BASE_URL if hasattr(self.settings, "PIM_BASE_URL") else "http://localhost:8002"
+        self.base_url = getattr(self.settings, "PIM_BASE_URL", None) or "http://localhost:8002"
+        self._http: Optional[SourceHttpClient] = None
 
     def _fetch_page(self, page: int = 1, page_size: int = 100, updated_after: Optional[str] = None) -> Dict[str, Any]:
-        params = {"page": page, "page_size": page_size}
+        if self._http is None:
+            token = load_source_credentials(self.source).get("api_token")
+            self._http = SourceHttpClient(self.source, headers={"Authorization": f"Bearer {token}"} if token else {})
+        params: Dict[str, Any] = {"page": page, "page_size": page_size}
         if updated_after:
             params["updated_after"] = updated_after
-        response = requests.get(f"{self.base_url}/api/v1/products", params=params, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        return self._http.get_json(f"{self.base_url}/api/v1/products", params=params)
+
+    def _fetch_api(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        from src.ingestion.shopify import ShopifyClient
+
+        client = ShopifyClient(load_source_credentials(self.source), source=self.source)
+        self.base_url = f"https://{client.shop}"
+        return client.fetch_products(updated_after=watermark)
 
     def _synthetic_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
         now = datetime.now(timezone.utc)
@@ -46,55 +59,14 @@ class PimIngest(BaseIngest):
             _rec("PIM-1003", "SKU-1003", "Prime Laptop", "Computing", "Prime", 999.0, 750.0, "active", now - timedelta(days=150), now - timedelta(days=2)),
             _rec("PIM-1004", "SKU-1004", "Flex Keyboard", "Accessories", "Flex", 89.0, 40.0, "archived", now - timedelta(days=200), now - timedelta(hours=5)),
             _rec("PIM-1005", "SKU-1005", "Pulse Charger", "Accessories", "Pulse", 49.0, 28.0, "active", now - timedelta(days=30), now - timedelta(minutes=40)),
+        ]
+        invalid = [
             {"product_id": "PIM-INVALID-1", "sku": "SKU-INVALID-1", "name": "Bad Product", "category": "Phones", "brand": "Acme", "price": -10, "cost": 50, "attributes": {"color": "black"}, "status": "invalid-status", "launch_date": "not-a-date", "updated_at": (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z")},
             {"product_id": "", "sku": "SKU-DUPLICATE-1", "name": "Missing Product ID", "category": "Phones", "brand": "Acme", "price": 120.0, "cost": 70, "attributes": {"color": "blue"}, "status": "active", "launch_date": (now - timedelta(days=10)).isoformat().replace("+00:00", "Z"), "updated_at": (now - timedelta(minutes=20)).isoformat().replace("+00:00", "Z")},
             {"product_id": "PIM-1006", "sku": "SKU-1001", "name": "Duplicate SKU", "category": "Phones", "brand": "Acme", "price": 159.0, "cost": 100.0, "attributes": {"color": "red"}, "status": "active", "launch_date": (now - timedelta(days=12)).isoformat().replace("+00:00", "Z"), "updated_at": (now - timedelta(minutes=15)).isoformat().replace("+00:00", "Z")},
         ]
+        if include_invalid_synthetic():
+            records = records + invalid
         if watermark:
             return [r for r in records if (r.get("updated_at") or r.get("launch_date") or "1970") >= watermark]
         return records
-
-    def fetch_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
-        env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
-
-        _is_local_url = self.base_url.startswith("http://localhost") or self.base_url.startswith("http://127.")
-        is_mocked = hasattr(self._fetch_page, "mock_calls")
-        if _is_local_url and allow_synthetic and not is_mocked:
-            self.logger.info("PIM base_url is local (%s) and ALLOW_SYNTHETIC_FALLBACK is enabled — using synthetic records.", self.base_url)
-            return self._synthetic_records(watermark)
-
-        try:
-            records: List[Dict[str, Any]] = []
-            page = 1
-            while True:
-                payload = self._fetch_page(page=page, page_size=100, updated_after=watermark)
-                items = payload.get("items", [])
-                records.extend(items)
-                next_marker = payload.get("next_page")
-                if next_marker is None:
-                    next_marker = payload.get("next_cursor")
-                if not next_marker:
-                    break
-                if isinstance(next_marker, int):
-                    page = next_marker
-                else:
-                    page += 1
-            return records
-        except Exception as exc:
-            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
-                self.logger.error("PIM ingestion failed in %s environment: %s", env, exc)
-                raise
-            self.logger.warning("PIM API failed in %s mode; falling back to synthetic records: %s", env, exc)
-            return self._synthetic_records(watermark)
-
-    def run(self) -> None:
-        watermark = self.resolve_watermark(default_watermark="1970-01-01T00:00:00Z")
-        records = self.fetch_records(watermark=watermark)
-        if not records:
-            self.record_metadata(0, 0, "success", self.base_url, self.object_name)
-            return
-        s3_key = self.persist_raw(records)
-        latest_watermark = max((r.get("updated_at") or r.get("launch_date") or watermark for r in records), default=watermark)
-        self.update_checkpoint(latest_watermark, run_id=self.run_id)
-        self.record_metadata(len(records), len(records), "success", self.base_url, s3_key)

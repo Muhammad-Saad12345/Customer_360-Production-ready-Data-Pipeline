@@ -16,7 +16,7 @@ oms_ids as (
     select distinct
         source_system,
         customer_id as source_customer_id,
-        cast(null as varchar) as email,
+        customer_email as email,
         cast(null as varchar) as phone,
         cast(null as varchar) as first_name,
         cast(null as varchar) as last_name,

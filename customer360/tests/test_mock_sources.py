@@ -4,12 +4,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from mock_sources.loyalty.main import app as loyalty_app
 from mock_sources.oms.main import app as oms_app
 from mock_sources.pim.main import app as pim_app
-from mock_sources.loyalty.main import app as loyalty_app
+from src.ingestion.loyalty import LoyaltyIngest
 from src.ingestion.oms import OmsIngest
 from src.ingestion.pim import PimIngest
-from src.ingestion.loyalty import LoyaltyIngest
 from src.processing.silver_gate import HubSpotSilverProcessor
 
 
@@ -40,6 +40,7 @@ class MockSourceApiTestCase(unittest.TestCase):
 
     def test_oms_connector_extracts_incremental_page_data(self):
         ingest = OmsIngest()
+        ingest.source_mode = "mock_api"
         with patch.object(ingest, "_fetch_page", side_effect=[
             {"items": [{"order_id": "ORD-001", "customer_id": "C-001", "order_ts": "2026-01-02T00:10:00Z", "order_status": "paid", "subtotal": 100, "tax": 10, "shipping": 5, "discount": 0, "net_total": 115, "currency": "USD", "channel": "web"}], "next_cursor": "page-2"},
             {"items": [{"order_id": "ORD-002", "customer_id": "C-002", "order_ts": "2026-01-02T00:20:00Z", "order_status": "paid", "subtotal": 200, "tax": 20, "shipping": 10, "discount": 0, "net_total": 230, "currency": "USD", "channel": "web"}], "next_cursor": None},
@@ -51,6 +52,7 @@ class MockSourceApiTestCase(unittest.TestCase):
     def test_pim_and_loyalty_connectors_read_and_persist(self):
         pim = PimIngest()
         loyalty = LoyaltyIngest()
+        pim.source_mode = loyalty.source_mode = "mock_api"
         with patch.object(pim, "_fetch_page", return_value={"items": [{
             "product_id": "PROD-1",
             "sku": "SKU-1",

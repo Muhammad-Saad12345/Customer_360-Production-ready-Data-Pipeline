@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -11,10 +9,7 @@ from src.monitoring.pipeline_health import (
     HealthStatus,
     PipelineHealthMonitor,
     RunResult,
-    REJECTION_RATE_WARN,
-    REJECTION_RATE_ERROR,
 )
-
 
 # ---------------------------------------------------------------------------
 # RunResult unit tests

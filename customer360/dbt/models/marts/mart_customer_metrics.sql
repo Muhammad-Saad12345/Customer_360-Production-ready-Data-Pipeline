@@ -13,7 +13,7 @@ BUSINESS KPI DEFINITIONS:
 5. Active Customers: Customers who placed an order in the last 90 days or opened an email in 30 days.
 6. Dormant Customers: Customers with no order in > 180 days.
 7. Blended AOV (Average Order Value): Total Net Revenue / Total Completed Orders.
-8. Average CLV: Mean estimated lifetime value across all buyers.
+8. Average CLV proxy: mean clv_proxy (heuristic, see customer_360).
 9. Churn Vulnerability Rate: High Risk Customers / Total Buyers.
 =============================================================================
 */
@@ -33,9 +33,9 @@ select
         then round(sum(total_net_revenue) / sum(total_completed_orders), 2)
         else 0.0
     end as cohort_aov,
-    round(avg(estimated_clv), 2) as avg_estimated_clv,
+    round(avg(clv_proxy), 2) as avg_clv_proxy,
     round(avg(loyalty_points_balance), 1) as avg_loyalty_points,
-    round(avg(average_csat_score), 2) as avg_csat_score,
+    round(avg(average_csat_score), 2) as avg_csat_score,  -- unrated customers excluded
     sum(case when total_completed_orders >= 2 then 1 else 0 end) as repeat_buyer_count,
     sum(case when total_completed_orders = 1 then 1 else 0 end) as one_time_buyer_count,
     round(

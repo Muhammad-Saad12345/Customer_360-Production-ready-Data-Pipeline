@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.health_api import app, _monitor
+from src.api.health_api import _monitor, app
 
 
 @pytest.fixture(autouse=True)

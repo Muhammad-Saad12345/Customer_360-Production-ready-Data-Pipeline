@@ -12,3 +12,8 @@ output "scheduler_role_arn" {
   description = "ARN of the IAM role assumed by EventBridge Scheduler"
   value       = aws_iam_role.scheduler_exec.arn
 }
+
+output "maintenance_schedule_name" {
+  description = "Name of the weekly Iceberg maintenance schedule"
+  value       = try(aws_scheduler_schedule.iceberg_maintenance[0].name, null)
+}

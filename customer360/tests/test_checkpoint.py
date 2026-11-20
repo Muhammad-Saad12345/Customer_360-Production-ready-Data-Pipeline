@@ -1,9 +1,9 @@
-import os
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from src.checkpoint import CheckpointStore
+from src.errors import RawWriteError
 from src.ingestion.base import BaseIngest
 from src.ingestion.hubspot import HubSpotIngest
 from src.ingestion.loyalty import LoyaltyIngest
@@ -70,7 +70,7 @@ class CheckpointStoreTestCase(unittest.TestCase):
 
     def test_synthetic_source_connectors_return_records(self):
         marketing = MarketingIngest()
-        marketing.provider = "synthetic"
+        marketing.source_mode = "synthetic"
         marketing.settings = type("Settings", (), {
             "MARKETING_PROVIDER": "synthetic",
             "MARKETING_API_KEY": None,
@@ -94,6 +94,7 @@ class CheckpointStoreTestCase(unittest.TestCase):
 
     def test_mailchimp_fetch_uses_real_api_when_configured(self):
         marketing = MarketingIngest()
+        marketing.source_mode = "api"
         marketing.provider = "mailchimp"
         marketing.settings = type("Settings", (), {
             "MARKETING_PROVIDER": "mailchimp",
@@ -105,6 +106,7 @@ class CheckpointStoreTestCase(unittest.TestCase):
 
         class FakeResponse:
             status_code = 200
+            headers: dict = {}
 
             def raise_for_status(self):
                 return None
@@ -122,7 +124,7 @@ class CheckpointStoreTestCase(unittest.TestCase):
                     "total_items": 1,
                 }
 
-        with patch("src.ingestion.marketing.requests.get", return_value=FakeResponse()) as mocked_get:
+        with patch("requests.Session.request", return_value=FakeResponse()) as mocked_get:
             records = marketing.fetch_records("1970-01-01T00:00:00Z")
 
         self.assertEqual(len(records), 1)
@@ -218,11 +220,13 @@ class CheckpointStoreTestCase(unittest.TestCase):
         self.assertEqual(len(records), 3)
         self.assertEqual([item["id"] for item in records], ["a", "b", "c"])
 
-    def test_failed_s3_write_returns_empty_path_without_raising(self):
+    def test_failed_s3_write_raises_instead_of_returning_empty_path(self):
+        # Previously persist_raw swallowed AccessDenied and returned "", so a run
+        # with nothing written reported success. It must raise now.
         ingest = HubSpotIngest()
         with patch.object(ingest.s3, "upload_jsonlines", side_effect=RuntimeError("AccessDenied")):
-            result = ingest.persist_raw([{"id": "x"}])
-            self.assertEqual(result, "")
+            with self.assertRaises(RawWriteError):
+                ingest.persist_raw([{"id": "x"}])
 
     def test_first_ever_extraction_uses_default_watermark_as_boundary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -295,8 +299,8 @@ class CheckpointStoreTestCase(unittest.TestCase):
             ingest.checkpoint_store = store
             ingest.object_name = "contacts"
             ingest.s3 = type("DummyS3", (), {"make_raw_key": lambda self, *args, **kwargs: "raw/test/data.json", "upload_jsonlines": lambda self, key, items: (_ for _ in ()).throw(RuntimeError("AccessDenied"))})()
-            result = ingest.persist_raw([{"id": "x"}])
-            self.assertEqual(result, "")
+            with self.assertRaises(RawWriteError):
+                ingest.persist_raw([{"id": "x"}])
             checkpoint = store.get_or_create(source="hubspot", entity="contacts")
             self.assertEqual(checkpoint["last_successful_watermark"], "2024-01-02T01:00:00Z")
 

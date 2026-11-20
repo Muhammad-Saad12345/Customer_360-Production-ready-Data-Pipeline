@@ -1,24 +1,31 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
-
 from src.config.settings import get_settings
+from src.errors import SourceModeError
 from src.ingestion.base import BaseIngest
+from src.ingestion.http_client import SourceHttpClient
+from src.ingestion.source_mode import load_source_credentials
 
 
 class LoyaltyIngest(BaseIngest):
-    def __init__(self):
-        super().__init__(source="loyalty", object_name="loyalty")
+    """Loyalty ledger. api and mock_api both use the REST contract
+    GET {base_url}/api/v1/loyalty?page=&page_size=&updated_after= ; api mode reads
+    base_url and api_token from the secret customer360/<env>/loyalty."""
+
+    watermark_fields = ["updated_at", "earn_ts"]
+
+    def __init__(self, run_id: Optional[str] = None):
+        super().__init__(source="loyalty", object_name="loyalty", run_id=run_id)
         self.settings = get_settings()
         self.base_url = (
             getattr(self.settings, "LOYALTY_BASE_URL", None)
             or getattr(self.settings, "LOYALTY_API_BASE_URL", None)
             or "http://localhost:8003"
         )
+        self._http: Optional[SourceHttpClient] = None
 
     def _synthetic_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
         now = datetime.now(timezone.utc)
@@ -50,61 +57,23 @@ class LoyaltyIngest(BaseIngest):
             return [r for r in base if r["updated_at"] >= watermark]
         return base
 
+    def _client(self) -> SourceHttpClient:
+        if self._http is None:
+            creds = load_source_credentials(self.source)
+            if self.source_mode == "api":
+                if not creds.get("base_url"):
+                    raise SourceModeError("loyalty api mode needs base_url in secret customer360/<env>/loyalty")
+                self.base_url = creds["base_url"].rstrip("/")
+            token = creds.get("api_token")
+            self._http = SourceHttpClient(self.source, headers={"Authorization": f"Bearer {token}"} if token else {})
+        return self._http
+
     def _fetch_page(self, page: int = 1, page_size: int = 100, updated_after: Optional[str] = None) -> Dict[str, Any]:
-        params = {"page": page, "page_size": page_size}
+        client = self._client()
+        params: Dict[str, Any] = {"page": page, "page_size": page_size}
         if updated_after:
             params["updated_after"] = updated_after
-        response = requests.get(f"{self.base_url}/api/v1/loyalty", params=params, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        return client.get_json(f"{self.base_url}/api/v1/loyalty", params=params)
 
-    def fetch_records(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
-        env = getattr(self.settings, "ENVIRONMENT", "dev").lower()
-        allow_synthetic = os.environ.get("ALLOW_SYNTHETIC_FALLBACK", os.environ.get("MOCK_SOURCE_FALLBACK", "false")).lower() in ("true", "1", "yes")
-
-        _is_local_url = self.base_url.startswith("http://localhost") or self.base_url.startswith("http://127.")
-        is_mocked = hasattr(self._fetch_page, "mock_calls")
-        if _is_local_url and allow_synthetic and not is_mocked:
-            self.logger.info("Loyalty base_url is local (%s) and ALLOW_SYNTHETIC_FALLBACK is enabled — using synthetic records.", self.base_url)
-            return self._synthetic_records(watermark)
-
-        try:
-            records: List[Dict[str, Any]] = []
-            page = 1
-            while True:
-                payload = self._fetch_page(page=page, page_size=100, updated_after=watermark)
-                items = payload.get("items", [])
-                records.extend(items)
-                next_marker = payload.get("next_page")
-                if next_marker is None:
-                    next_marker = payload.get("next_cursor")
-                if not next_marker:
-                    break
-                if isinstance(next_marker, int):
-                    page = next_marker
-                else:
-                    page += 1
-
-            normalized_records: List[Dict[str, Any]] = []
-            for record in records:
-                if "source_type" not in record:
-                    record = {**record, "source_type": "synthetic"}
-                normalized_records.append(record)
-            return normalized_records
-        except Exception as exc:
-            if env in ("prod", "production", "staging", "stage") and not allow_synthetic:
-                self.logger.error("Loyalty ingestion failed in %s environment: %s", env, exc)
-                raise
-            self.logger.warning("Loyalty API failed in %s mode; falling back to synthetic records: %s", env, exc)
-            return self._synthetic_records(watermark)
-
-    def run(self) -> None:
-        watermark = self.resolve_watermark(default_watermark="1970-01-01T00:00:00Z")
-        records = self.fetch_records(watermark=watermark)
-        if not records:
-            self.record_metadata(0, 0, "success", self.base_url, self.object_name)
-            return
-        s3_key = self.persist_raw(records)
-        latest_watermark = max((r.get("updated_at") or r.get("earn_ts") or watermark for r in records), default=watermark)
-        self.update_checkpoint(latest_watermark, run_id=self.run_id)
-        self.record_metadata(len(records), len(records), "success", self.base_url, s3_key)
+    def _fetch_api(self, watermark: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [{**r, "source_type": r.get("source_type", "loyalty_api")} for r in self._fetch_mock_api(watermark)]

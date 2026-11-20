@@ -15,7 +15,8 @@ staged as (
         cast(agent_id as varchar) as assigned_agent_id,
         cast(created_at as varchar) as created_at_raw,
         cast(resolved_at as varchar) as resolved_at_raw,
-        cast(coalesce(csat_score, 0.0) as double) as csat_rating,
+        -- NULL means "not rated"; it must not count as a score of 0 in averages.
+        cast(csat_score as double) as csat_rating,
         source_type as provider_type,
         'zendesk' as source_system,
         run_id,

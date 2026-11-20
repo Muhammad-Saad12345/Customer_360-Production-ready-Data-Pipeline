@@ -3,16 +3,12 @@
     table_type='iceberg'
 ) }}
 
--- Standard date dimension spine covering past and upcoming operational horizons
+-- Calendar spine 2016-01-01 .. 2030-12-31 (covers the Olist history and the
+-- current years). The previous digit cross-join produced only 400 days, so the
+-- spine ended in February 2025.
 with raw_dates as (
-    select date_add('day', n, date '2024-01-01') as cal_date
-    from (
-        select (a.pos * 100 + b.pos * 10 + c.pos) as n
-        from (values 0,1,2,3) as a(pos)
-        cross join (values 0,1,2,3,4,5,6,7,8,9) as b(pos)
-        cross join (values 0,1,2,3,4,5,6,7,8,9) as c(pos)
-    )
-    where date_add('day', n, date '2024-01-01') <= date '2027-12-31'
+    select cal_date
+    from unnest(sequence(date '2016-01-01', date '2030-12-31', interval '1' day)) as t(cal_date)
 )
 
 select

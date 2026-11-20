@@ -26,15 +26,14 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.processing.silver_gate import HubSpotSilverProcessor
 from src.lakehouse.iceberg_loader import IcebergLoader
 from src.lakehouse.table_definitions import TABLE_REGISTRY
-
+from src.processing.silver_gate import HubSpotSilverProcessor
 
 # ---------------------------------------------------------------------------
 # Synthetic record factories — one per source/entity
@@ -644,16 +643,6 @@ class TestE2ESourceOwnershipEnforcement(unittest.TestCase):
         processor.s3 = s3_mock
         processor.bucket = "test-bucket"
 
-        # Simulate an order record arriving via the hubspot path (source mismatch)
-        bad_records = [
-            {
-                "id": "order_via_hubspot",
-                "properties": {
-                    "email": "bad@example.com",
-                    # Missing required HubSpot contact fields intentionally absent
-                },
-            }
-        ]
         # Should pass structural validation as hubspot/contacts (has id, valid email)
         # but this test documents that HubSpot cannot claim orders domain
         from src.ingestion.hubspot import HubSpotIngest

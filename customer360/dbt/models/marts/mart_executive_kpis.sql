@@ -16,14 +16,15 @@ with customer_base as (
         count(distinct case when total_completed_orders > 0 then master_customer_id end) as total_purchasing_customers,
         sum(total_completed_orders) as total_orders_fulfilled,
         sum(total_net_revenue) as enterprise_net_revenue,
-        avg(case when total_completed_orders > 0 then average_order_value end) as enterprise_aov,
+        -- AOV = revenue / orders (not the mean of per-customer AOVs)
+        sum(total_net_revenue) / nullif(sum(total_completed_orders), 0) as enterprise_aov,
         sum(case when total_completed_orders >= 2 then 1 else 0 end) as repeat_customers,
         sum(loyalty_points_balance) as outstanding_loyalty_points_liability,
         sum(total_marketing_touches) as total_marketing_impressions,
         sum(total_marketing_opens) as total_marketing_opens,
         sum(lifetime_support_tickets) as total_support_cases_logged,
         sum(open_support_cases) as current_open_backlog_tickets,
-        avg(case when average_csat_score > 0 then average_csat_score end) as enterprise_csat_index
+        avg(average_csat_score) as enterprise_csat_index  -- mean of rated customers
     from {{ ref('customer_360') }}
 )
 

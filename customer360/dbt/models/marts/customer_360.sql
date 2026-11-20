@@ -10,9 +10,11 @@ with golden_customers as (
 identity_bridge as (
     select
         master_customer_id,
-        max(match_confidence) as identity_match_confidence,
-        max(match_method) as primary_match_method,
-        max(rule_version) as identity_rule_version
+        -- a customer is only as well resolved as its weakest link
+        min(match_confidence) as identity_match_confidence,
+        min_by(match_method, match_confidence) as primary_match_method,
+        max(rule_version) as identity_rule_version,
+        count(*) as linked_source_records
     from {{ ref('bridge_customer_identity') }}
     group by master_customer_id
 ),
@@ -46,7 +48,7 @@ support_aggregates as (
         count(distinct ticket_id) as lifetime_support_tickets,
         sum(is_open) as open_support_cases,
         sum(is_resolved) as resolved_support_cases,
-        avg(case when csat_rating > 0 then csat_rating end) as average_csat_rating
+        avg(csat_rating) as average_csat_rating  -- NULL ratings ignored
     from {{ ref('fact_support_case') }}
     group by master_customer_id
 ),
@@ -68,7 +70,8 @@ c360_joined as (
         -- 2. Identity Resolution Auditability
         coalesce(b.primary_match_method, 'unresolved_singleton_exception') as identity_match_method,
         coalesce(b.identity_match_confidence, 0.50) as identity_confidence_score,
-        coalesce(b.identity_rule_version, 'v1.0-deterministic') as identity_rule_version,
+        coalesce(b.identity_rule_version, 'v2.0-deterministic') as identity_rule_version,
+        coalesce(b.linked_source_records, 0) as linked_source_records,
 
         -- 3. Transactional & Revenue Metrics (OMS Authority)
         coalesce(o.total_completed_orders, 0) as total_completed_orders,
@@ -77,24 +80,31 @@ c360_joined as (
         o.first_order_at,
         o.latest_order_at,
 
-        -- 4. Recency & Frequency Metrics
+        -- 4. Recency (days since the latest recognised order; NULL for non-buyers)
         case
             when o.latest_order_at is not null
             then date_diff('day', date(substr(o.latest_order_at, 1, 10)), current_date)
-            else 999
         end as recency_days,
 
-        -- 5. RFM Customer Segmentation
+        -- 5. RFM segment: Recency, Frequency and Monetary all count
         case
-            when coalesce(o.total_completed_orders, 0) >= 3 and coalesce(o.total_net_revenue, 0) >= 500
-                then 'Champions / VIP'
-            when coalesce(o.total_completed_orders, 0) >= 2 and coalesce(o.total_net_revenue, 0) >= 200
-                then 'Loyal Customers'
-            when coalesce(o.total_completed_orders, 0) = 1
-                then 'New Buyers'
-            when coalesce(o.total_completed_orders, 0) = 0 and c.customer_lifecycle_stage in ('lead', 'subscriber')
+            when coalesce(o.total_completed_orders, 0) = 0
+                 and c.customer_lifecycle_stage in ('lead', 'subscriber', 'marketingqualifiedlead', 'salesqualifiedlead')
                 then 'Active Prospects'
-            else 'Dormant / Lapsed'
+            when coalesce(o.total_completed_orders, 0) = 0
+                then 'No Purchases'
+            when date_diff('day', date(substr(o.latest_order_at, 1, 10)), current_date) > 180
+                then 'Dormant / Lapsed'
+            when o.total_completed_orders >= 3 and o.total_net_revenue >= 500
+                 and date_diff('day', date(substr(o.latest_order_at, 1, 10)), current_date) <= 90
+                then 'Champions / VIP'
+            when o.total_completed_orders >= 2 and o.total_net_revenue >= 200
+                then 'Loyal Customers'
+            when o.total_completed_orders >= 2
+                then 'At Risk'
+            when date_diff('day', date(substr(o.latest_order_at, 1, 10)), current_date) <= 90
+                then 'New Buyers'
+            else 'At Risk'
         end as rfm_customer_segment,
 
         -- 6. Loyalty Status (Loyalty Authority)
@@ -116,7 +126,7 @@ c360_joined as (
         coalesce(s.lifetime_support_tickets, 0) as lifetime_support_tickets,
         coalesce(s.open_support_cases, 0) as open_support_cases,
         coalesce(s.resolved_support_cases, 0) as resolved_support_cases,
-        round(coalesce(s.average_csat_rating, 0.0), 2) as average_csat_score,
+        round(s.average_csat_rating, 2) as average_csat_score,  -- NULL when never rated
         case when coalesce(s.open_support_cases, 0) > 0 then 1 else 0 end as has_active_ticket,
 
         -- 9. Churn Risk & Health Indicators
@@ -128,8 +138,10 @@ c360_joined as (
             else 'Low Risk / Healthy'
         end as customer_churn_risk,
 
-        -- 10. Customer Lifetime Value (CLV) Foundation
-        round(coalesce(o.total_net_revenue, 0.0) + (coalesce(o.average_order_value, 50.0) * 1.5), 2) as estimated_clv,
+        -- 10. CLV proxy: historical revenue plus 1.5 further orders at the
+        --     customer's own AOV. A heuristic placeholder, not a predictive
+        --     CLV model; non-buyers get 0 (no invented order value).
+        round(coalesce(o.total_net_revenue, 0.0) + coalesce(o.average_order_value, 0.0) * 1.5, 2) as clv_proxy,
 
         -- Lineage & Audit
         c.survivorship_authority_manifest,

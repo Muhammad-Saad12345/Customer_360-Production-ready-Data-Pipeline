@@ -19,10 +19,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from src.lakehouse.athena_client import AthenaClient, AthenaQueryExecutionError
+from src.lakehouse.athena_client import AthenaClient
 from src.lakehouse.config import LakehouseConfig, get_lakehouse_config
 from src.lakehouse.glue_catalog import GlueIcebergCatalog
-from src.lakehouse.table_definitions import TABLE_REGISTRY, TableDefinition, get_all_table_definitions
+from src.lakehouse.table_definitions import (
+    TABLE_REGISTRY,
+)
 
 logger = logging.getLogger("customer360.lakehouse.maintenance")
 

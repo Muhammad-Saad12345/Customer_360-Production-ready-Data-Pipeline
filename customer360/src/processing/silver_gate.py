@@ -9,19 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import boto3
-try:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-except ImportError:
-    import subprocess
-    import sys
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow>=14.0.0"])
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except Exception:
-        pa = None
-        pq = None
+
+# pyarrow is packaged into the Lambda zip (scripts/package_artifacts.py).
+# Installing packages at runtime from a Lambda is slow, needs internet access and
+# is not reproducible, so a missing pyarrow is now an import error.
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.config.settings import get_settings
 from src.processing.hubspot_processor import HubSpotDataProcessor
@@ -421,6 +414,8 @@ class HubSpotSilverProcessor:
             "currency": record.get("currency"),
             "channel": record.get("channel"),
             "updated_at": record.get("updated_at"),
+            # Lets dbt link an order to a CRM contact by email (identity bridge).
+            "customer_email": (record.get("customer_email") or "").strip().lower() or None,
         })
         return item
 
@@ -556,10 +551,15 @@ class HubSpotSilverProcessor:
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=json.dumps(payload, indent=2, default=str).encode("utf-8"))
         return f"s3://{self.bucket}/{key}"
 
-    def read_raw_records_from_s3(self, source: str, entity: str, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def read_raw_records_from_s3(
+        self, source: str, entity: str, run_id: Optional[str] = None, raw_key: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         s3 = boto3.client("s3", region_name=self.settings.AWS_REGION)
         objects = []
-        if run_id:
+        if raw_key:
+            # Exact object written by this run's ingest step (passed by Step Functions).
+            objects = [{"Key": raw_key}]
+        elif run_id:
             today = datetime.now(timezone.utc).date().isoformat()
             today_prefix = f"raw/{source}/{entity}/ingestion_date={today}/run_id={run_id}/"
             resp = s3.list_objects_v2(Bucket=self.settings.S3_BUCKET, Prefix=today_prefix)
@@ -603,11 +603,14 @@ class HubSpotSilverProcessor:
         entity: str,
         run_id: str,
         raw_records: Optional[Iterable[Dict[str, Any]]] = None,
+        raw_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         if raw_records is not None:
             records = list(raw_records)
+        elif raw_key or run_id:
+            records = self.read_raw_records_from_s3(source, entity, run_id=run_id, raw_key=raw_key)
         else:
-            records = self.read_raw_records_from_s3(source, entity, run_id=run_id) if run_id else []
+            records = []
 
         input_record_count = len(records)
         valid_rows: List[Dict[str, Any]] = []

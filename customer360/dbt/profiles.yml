@@ -23,10 +23,10 @@ customer360:
 
     prod:
       type: athena
-      s3_staging_dir: "{{ env_var('DBT_S3_STAGING_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-prod') ~ '/athena-results/') }}"
-      s3_data_dir: "{{ env_var('DBT_S3_DATA_DIR', 's3://' ~ env_var('S3_BUCKET', 'customer360-lakehouse-prod') ~ '/iceberg/') }}"
-      schema: "{{ env_var('DBT_SCHEMA', env_var('ICEBERG_DATABASE', 'customer360_iceberg')) }}"
+      s3_staging_dir: "{{ env_var('DBT_S3_STAGING_DIR', 's3://' ~ env_var('S3_BUCKET', 'c360-prod-lakehouse') ~ '/athena-results/') }}"
+      s3_data_dir: "{{ env_var('DBT_S3_DATA_DIR', 's3://' ~ env_var('S3_BUCKET', 'c360-prod-lakehouse') ~ '/dbt/') }}"
+      schema: "{{ env_var('DBT_SCHEMA', env_var('ICEBERG_DATABASE', 'customer360_prod')) }}"
       database: awsdatacatalog
       region_name: "{{ env_var('AWS_DEFAULT_REGION', env_var('AWS_REGION', 'us-east-1')) }}"
-      work_group: "{{ env_var('ATHENA_WORKGROUP', 'customer360_prod') }}"
+      work_group: "{{ env_var('ATHENA_WORKGROUP', 'customer360-prod') }}"
       threads: 8

@@ -11,28 +11,27 @@ No AWS credentials required.  All S3/Glue/Athena I/O is mocked.
 from __future__ import annotations
 
 import io
-import uuid
 import unittest
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.contracts.data_contracts import (
-    get_contract,
-    get_all_contracts,
     HUBSPOT_CONTACTS_CONTRACT,
-    OMS_ORDERS_CONTRACT,
-    PIM_PRODUCTS_CONTRACT,
     LOYALTY_CONTRACT,
     MARKETING_CAMPAIGN_EVENTS_CONTRACT,
+    OMS_ORDERS_CONTRACT,
+    PIM_PRODUCTS_CONTRACT,
+    get_all_contracts,
+    get_contract,
 )
-from src.processing.silver_gate import HubSpotSilverProcessor
 from src.lakehouse.iceberg_loader import IcebergLoader
 from src.lakehouse.table_definitions import TABLE_REGISTRY, get_table_definition
-
+from src.processing.silver_gate import HubSpotSilverProcessor
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -221,10 +220,14 @@ class TestDataContracts(unittest.TestCase):
             "email_address": "not-an-email",
             "status": "subscribed", "source_type": "mailchimp",
         }
-        # DataContract.validate handles email check through enum/required but not format
-        # Email format validation is in HubSpotSilverProcessor._validate_generic_record
-        # This test confirms the contract has email_fields declared
+        # DataContract.validate checks required/enum, not format: the email format
+        # check lives in the silver gate, so run the record through it.
         self.assertIn("email_address", MARKETING_CAMPAIGN_EVENTS_CONTRACT.email_fields)
+        from src.processing.silver_gate import HubSpotSilverProcessor
+
+        result = HubSpotSilverProcessor().process_records("marketing", "campaign_events", "run-email", raw_records=[record])
+        self.assertEqual(result["invalid_count"], 1)
+        self.assertEqual(result["quarantine_records"][0]["validation_rule"], "email_format")
 
     def test_contract_iceberg_table_names_match_registry(self):
         """Each contract's iceberg_table must correspond to an active TABLE_REGISTRY entry."""

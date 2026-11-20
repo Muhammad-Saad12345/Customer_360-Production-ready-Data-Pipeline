@@ -19,7 +19,6 @@ from src.ingestion.oms import OmsIngest
 from src.ingestion.pim import PimIngest
 from src.processing.silver_gate import HubSpotSilverProcessor
 
-
 settings = get_settings()
 s3 = boto3.client("s3", region_name=settings.AWS_REGION)
 processor = HubSpotSilverProcessor()

@@ -152,8 +152,10 @@ class CheckpointStore:
         watermark: str,
         run_id: str,
         status: str = "success",
+        extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         record = self.get_or_create(source, entity, default_watermark=watermark)
+        record.update(extra or {})
         record.update(
             {
                 "source": source,

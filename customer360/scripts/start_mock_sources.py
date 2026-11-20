@@ -20,9 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import uvicorn
+
+from mock_sources.loyalty.main import app as loyalty_app
 from mock_sources.oms.main import app as oms_app
 from mock_sources.pim.main import app as pim_app
-from mock_sources.loyalty.main import app as loyalty_app
 
 
 def run_server(app, port: int, name: str):

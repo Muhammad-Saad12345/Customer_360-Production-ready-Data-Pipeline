@@ -19,6 +19,7 @@ staged as (
         coalesce(upper(trim(currency)), 'USD') as currency_code,
         coalesce(lower(trim(channel)), 'unknown') as sales_channel,
         cast(updated_at as varchar) as updated_at_raw,
+        nullif(lower(trim(customer_email)), '') as customer_email,
         run_id,
         ingestion_timestamp,
         ingestion_date

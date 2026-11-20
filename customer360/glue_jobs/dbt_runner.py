@@ -32,9 +32,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 from urllib.parse import urlparse
 
 logging.basicConfig(
@@ -125,19 +126,34 @@ def _download_s3_artifact(s3_uri: str, target_dir: Path) -> None:
     s3.download_file(bucket, key, str(archive_file))
     logger.info("Downloaded %d bytes to %s", archive_file.stat().st_size, archive_file)
 
+    root = target_dir.resolve()
+
+    def _safe(name: str) -> None:
+        # Refuse absolute paths and "../" entries that would write outside target_dir.
+        if not (root / name).resolve().is_relative_to(root):
+            raise ValueError(f"Refusing to extract {name!r} outside {root}")
+
     if archive_file.name.endswith(".tar.gz") or archive_file.name.endswith(".tgz"):
         with tarfile.open(archive_file, "r:gz") as tar:
-            tar.extractall(path=target_dir)
+            members = []
+            for member in tar.getmembers():
+                _safe(member.name)
+                if member.issym() or member.islnk() or member.isdev():
+                    raise ValueError(f"Refusing to extract link/device entry {member.name!r}")
+                members.append(member)
+            tar.extractall(path=target_dir, members=members)  # nosec B202
         archive_file.unlink()
     elif archive_file.name.endswith(".zip"):
         with zipfile.ZipFile(archive_file, "r") as z:
-            z.extractall(path=target_dir)
+            for name in z.namelist():
+                _safe(name)
+            z.extractall(path=target_dir)  # nosec B202
         archive_file.unlink()
 
 
 def _resolve_project_dir(s3_path: str) -> Path:
     """Locate the dbt project root containing dbt_project.yml."""
-    work_dir = Path("/tmp/dbt_project")
+    work_dir = Path(tempfile.mkdtemp(prefix="dbt_project_"))
     if s3_path:
         _download_s3_artifact(s3_path, work_dir)
         if (work_dir / "dbt_project.yml").exists():
