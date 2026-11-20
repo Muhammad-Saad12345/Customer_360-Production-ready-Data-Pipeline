@@ -292,6 +292,8 @@ resource "aws_lambda_function" "functions" {
   s3_bucket = var.s3_artifacts_bucket
   s3_key    = "artifacts/${var.artifact_version}/lambdas/${each.key}.zip"
 
+  # Only functions whose role may read secrets get a secret name; for the others
+  # it is empty, so shared settings code never calls Secrets Manager.
   environment {
     variables = {
       ENVIRONMENT                    = var.environment
@@ -300,7 +302,7 @@ resource "aws_lambda_function" "functions" {
       ICEBERG_S3_PREFIX              = var.iceberg_s3_prefix
       ATHENA_WORKGROUP               = var.athena_workgroup_name
       C360_SNS_ALERT_TOPIC_ARN       = var.sns_topic_arn
-      SECRETS_MANAGER_SECRET_NAME    = var.legacy_secret_name
+      SECRETS_MANAGER_SECRET_NAME    = each.value.secrets ? var.legacy_secret_name : ""
       C360_SOURCE_MODES              = jsonencode(var.source_modes)
       C360_REQUIRED_SOURCE_MODE      = var.required_source_mode
       C360_SOURCE_SECRET_PREFIX      = "customer360/${var.environment}/"

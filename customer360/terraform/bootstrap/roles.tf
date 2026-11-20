@@ -120,6 +120,7 @@ resource "aws_iam_role_policy" "github_plan" {
           "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetFunctionCodeSigningConfig",
           "lambda:ListVersionsByFunction", "lambda:GetPolicy", "lambda:ListTags",
           "states:DescribeStateMachine", "states:ListTagsForResource", "states:ValidateStateMachineDefinition",
+          "states:ListStateMachineVersions",
           "glue:GetJob", "glue:GetDatabase", "glue:GetTags",
           "athena:GetWorkGroup", "athena:ListTagsForResource",
           "scheduler:GetSchedule", "scheduler:ListTagsForResource",

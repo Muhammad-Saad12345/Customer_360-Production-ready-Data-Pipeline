@@ -74,3 +74,50 @@ def test_secrets_manager_default_fallback():
     """Verify that a default value is returned when secret is not found."""
     sm = SecretsManager(auto_load=False)
     assert sm.get_secret("OPTIONAL_KEY", default="default_val") == "default_val"
+
+
+def test_lambda_without_secret_name_never_calls_secrets_manager(monkeypatch):
+    """Non-ingest Lambdas get no secret name and must not touch Secrets Manager."""
+    from src.config import secrets as sec
+
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "c360-staging-silver_gate")
+    calls = []
+
+    class Boom:
+        def get_secret_value(self, **kw):
+            calls.append(kw)
+            raise AssertionError("Secrets Manager must not be called")
+
+    for value in (None, ""):
+        if value is None:
+            monkeypatch.delenv("SECRETS_MANAGER_SECRET_NAME", raising=False)
+        else:
+            monkeypatch.setenv("SECRETS_MANAGER_SECRET_NAME", value)
+        assert sec.default_secret_name() == ""
+        mgr = sec.SecretsManager(client=Boom())
+        assert mgr.get_secret("HUBSPOT_ACCESS_TOKEN") is None
+    assert calls == []
+
+
+def test_ingest_lambda_still_reads_its_configured_secret(monkeypatch):
+    from src.config import secrets as sec
+
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "c360-staging-ingest")
+    monkeypatch.setenv("SECRETS_MANAGER_SECRET_NAME", "c_360_secret_manager")
+
+    class Fake:
+        def get_secret_value(self, SecretId):
+            assert SecretId == "c_360_secret_manager"
+            return {"SecretString": '{"HUBSPOT_ACCESS_TOKEN": "x"}'}
+
+    assert sec.SecretsManager(client=Fake()).get_secret("HUBSPOT_ACCESS_TOKEN") == "x"
+
+
+def test_local_default_unchanged(monkeypatch):
+    from src.config import secrets as sec
+
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    monkeypatch.delenv("SECRETS_MANAGER_SECRET_NAME", raising=False)
+    assert sec.default_secret_name() == sec.DEFAULT_SECRET_NAME
