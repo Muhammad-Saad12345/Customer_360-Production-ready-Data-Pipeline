@@ -127,13 +127,20 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Plan
         working-directory: customer360/terraform/environments/${{ matrix.env }}
+        env:
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
         run: |
           terraform init -input=false -lock=false
           # A failed plan must fail the job (no pipe hiding the exit code) and its
           # error must be visible in the summary and as an annotation.
+          # Same alert email as the deploy jobs, so the plan doesn't show the
+          # subscription as destroyed. (SCHEDULE_ENABLED / ENABLED_SOURCES are
+          # environment-scoped and not visible here; they default to off / all.)
+          EXTRA=()
+          if [ -n "$ALERT_EMAIL" ]; then EXTRA+=(-var "alert_email_addresses=[\"$ALERT_EMAIL\"]"); fi
           set +e
           terraform plan -input=false -lock=false -no-color \
-            -var "artifact_version=${GITHUB_SHA::12}" > plan.txt 2>&1
+            -var "artifact_version=${GITHUB_SHA::12}" "${EXTRA[@]}" > plan.txt 2>&1
           rc=$?
           set -e
           cat plan.txt
