@@ -11,7 +11,7 @@ try:
 except ImportError:
     pass
 
-from src.config.secrets import get_secret
+from src.config.secrets import default_secret_name, get_secret
 
 logger = logging.getLogger("customer360.config")
 
@@ -81,7 +81,7 @@ def get_settings() -> Settings:
         env = os.getenv("ENVIRONMENT").lower().strip()
 
     aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
-    secret_name = os.getenv("SECRETS_MANAGER_SECRET_NAME", "c_360_secret_manager")
+    secret_name = default_secret_name()
 
     # Environment-specific defaults (reconciled with verified live AWS infrastructure)
     if env in ("prod", "production"):

@@ -22,6 +22,23 @@ DEFAULT_SECRET_NAME = "c_360_secret_manager"
 DEFAULT_REGION = "us-east-1"
 
 
+def default_secret_name() -> str:
+    """Name of the shared legacy secret, or "" when this process must not read it.
+
+    Inside AWS Lambda the name comes only from SECRETS_MANAGER_SECRET_NAME, which
+    Terraform sets just for functions whose role may read secrets (ingest). A
+    missing or empty variable there means "no shared secret": the old default
+    would make every function call Secrets Manager and fail with AccessDenied.
+    Outside Lambda (local tools, tests) the historical default still applies.
+    """
+    value = os.getenv("SECRETS_MANAGER_SECRET_NAME")
+    if value is not None:
+        return value.strip()
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        return ""
+    return DEFAULT_SECRET_NAME
+
+
 class SecretResolutionError(RuntimeError):
     """Raised when a required secret cannot be resolved."""
     pass
@@ -37,7 +54,7 @@ class SecretsManager:
         client: Optional[Any] = None,
         auto_load: Optional[bool] = None,
     ):
-        self.secret_name = secret_name if secret_name is not None else os.getenv("SECRETS_MANAGER_SECRET_NAME", DEFAULT_SECRET_NAME)
+        self.secret_name = secret_name if secret_name is not None else default_secret_name()
         self.region_name = region_name or os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION))
         self._client = client
         self._cached_secrets: Dict[str, str] = {}
