@@ -43,9 +43,13 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  account_id    = data.aws_caller_identity.current.account_id
-  region        = var.aws_region
-  repo_sub_base = "repo:${var.github_repository}"
+  account_id = data.aws_caller_identity.current.account_id
+  region     = var.aws_region
+  repo_owner = split("/", var.github_repository)[0]
+  repo_name  = split("/", var.github_repository)[1]
+  repo_sub_base = (var.use_immutable_oidc_subject
+    ? "repo:${local.repo_owner}@${var.github_owner_id}/${local.repo_name}@${var.github_repository_id}"
+  : "repo:${var.github_repository}")
   boundary_name = "c360-workload-boundary"
   boundary_arn  = "arn:aws:iam::${local.account_id}:policy/${local.boundary_name}"
 }

@@ -13,7 +13,7 @@ module "deploy_staging" {
   account_id         = local.account_id
   region             = local.region
   oidc_provider_arn  = data.aws_iam_openid_connect_provider.github.arn
-  github_repository  = var.github_repository
+  github_sub_base    = local.repo_sub_base
   github_environment = "staging"
   state_bucket       = var.staging_state_bucket
   lakehouse_bucket   = var.staging_lakehouse_bucket
@@ -30,7 +30,7 @@ module "deploy_prod" {
   account_id              = local.account_id
   region                  = local.region
   oidc_provider_arn       = data.aws_iam_openid_connect_provider.github.arn
-  github_repository       = var.github_repository
+  github_sub_base         = local.repo_sub_base
   github_environment      = "production"
   state_bucket            = var.prod_state_bucket
   lakehouse_bucket        = "c360-prod-lakehouse"

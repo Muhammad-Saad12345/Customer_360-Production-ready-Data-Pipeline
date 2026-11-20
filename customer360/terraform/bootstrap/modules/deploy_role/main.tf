@@ -8,7 +8,10 @@ variable "environment" { type = string }
 variable "account_id" { type = string }
 variable "region" { type = string }
 variable "oidc_provider_arn" { type = string }
-variable "github_repository" { type = string }
+variable "github_sub_base" {
+  description = "OIDC sub prefix, e.g. repo:<owner>@<id>/<repo>@<id>"
+  type        = string
+}
 variable "github_environment" { type = string }
 variable "state_bucket" { type = string }
 variable "lakehouse_bucket" { type = string }
@@ -273,7 +276,7 @@ resource "aws_iam_role" "this" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${var.github_environment}"
+          "token.actions.githubusercontent.com:sub" = "${var.github_sub_base}:environment:${var.github_environment}"
         }
       }
     }]

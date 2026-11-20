@@ -9,6 +9,27 @@ variable "github_repository" {
   default     = "Muhammad-Saad12345/Customer_360-Production-ready-Data-Pipeline"
 }
 
+# Repositories created after 15 Jul 2026 (this one: 5 Oct 2026) get GitHub's
+# immutable OIDC subject: repo:<owner>@<owner_id>/<repo>@<repo_id>:...
+# IDs: gh api repos/<owner>/<repo> -q '.owner.id, .id'
+variable "github_owner_id" {
+  description = "Numeric GitHub owner ID (immutable)"
+  type        = string
+  default     = "179042869"
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub repository ID (immutable)"
+  type        = string
+  default     = "1405365304"
+}
+
+variable "use_immutable_oidc_subject" {
+  description = "true when the repository issues immutable subject claims (default for repos created after 15 Jul 2026)"
+  type        = bool
+  default     = true
+}
+
 variable "staging_state_bucket" {
   type    = string
   default = "c360-staging-tfstate"

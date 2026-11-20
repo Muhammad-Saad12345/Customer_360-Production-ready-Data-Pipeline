@@ -145,7 +145,10 @@ Verify:
 ```bash
 aws iam get-role --role-name c360-github-deploy-staging \
   --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition'
-#  sub must be repo:<owner>/<repo>:environment:staging
+#  sub must be repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:staging
+#  (this repo was created after 15 Jul 2026, so GitHub issues the immutable subject;
+#   IDs: gh api repos/<owner>/<repo> -q '.owner.id, .id'; older repos: set
+#   -var use_immutable_oidc_subject=false for the classic repo:<owner>/<repo> form)
 aws iam get-policy --policy-arn arn:aws:iam::$ACCOUNT_ID:policy/c360-workload-boundary --query Policy.DefaultVersionId
 aws s3api get-bucket-versioning --bucket c360-prod-tfstate      # Enabled
 ```
