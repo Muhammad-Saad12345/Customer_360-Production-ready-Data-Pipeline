@@ -120,6 +120,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
@@ -128,9 +129,21 @@ jobs:
         working-directory: customer360/terraform/environments/${{ matrix.env }}
         run: |
           terraform init -input=false -lock=false
+          # A failed plan must fail the job (no pipe hiding the exit code) and its
+          # error must be visible in the summary and as an annotation.
+          set +e
           terraform plan -input=false -lock=false -no-color \
-            -var "artifact_version=${GITHUB_SHA::12}" | tee plan.txt
-          { echo '### Terraform plan: ${{ matrix.env }}'; echo '```'; tail -n 60 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            -var "artifact_version=${GITHUB_SHA::12}" > plan.txt 2>&1
+          rc=$?
+          set -e
+          cat plan.txt
+          { echo '### Terraform plan: ${{ matrix.env }}'; echo '```'; grep -E '^Plan:|^No changes' plan.txt || true;
+            grep -A12 -E '^Error|encountered a problem' plan.txt || true; echo '...'; tail -n 40 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            msg=$(grep -A8 -E '^Error' plan.txt | head -60 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=terraform plan ${{ matrix.env }} (exit $rc)::${msg:-see job log}"
+            exit "$rc"
+          fi
 
   # ── 3. Build artifacts once per commit ─────────────────────────────────────
   build:
