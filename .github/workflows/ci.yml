@@ -144,6 +144,10 @@ jobs:
             echo "::error title=terraform plan ${{ matrix.env }} (exit $rc)::${msg:-see job log}"
             exit "$rc"
           fi
+          # Plan totals and every non-create change, visible on the PR as a notice.
+          note=$( { grep -E '^Plan:|^No changes' plan.txt; grep -E '^  # .* (will be (updated in-place|destroyed|imported)|must be replaced)' plan.txt; } \
+            | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=terraform plan ${{ matrix.env }}::${note}"
 
   # ── 3. Build artifacts once per commit ─────────────────────────────────────
   build:
