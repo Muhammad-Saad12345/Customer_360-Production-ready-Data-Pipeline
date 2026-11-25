@@ -142,8 +142,12 @@ class IcebergLoader:
         Python table_def) to avoid ALTER TABLE ADD COLUMNS failures when a column was
         already added in a prior run but was not backported to the Python definition.
         """
-        # Initialize live_cols with static table definition as base truth
-        live_cols: Set[str] = set(table_def.column_names)
+        # The live Glue table is the source of truth. A table created by an older
+        # release can lack columns that the current TableDefinition has (e.g.
+        # oms_orders.customer_email); MERGE writes every TableDefinition column,
+        # so those must be added too. Only if Glue can't be read (or reports no
+        # columns, which a real Iceberg table never does) fall back to the static def.
+        live_cols: Set[str] = set()
         try:
             glue_meta = self.glue.get_table_metadata(table_def.table_name)
             if isinstance(glue_meta, dict):
@@ -155,8 +159,16 @@ class IcebergLoader:
                         live_cols.add(k["Name"])
         except Exception as e:
             logger.debug("Could not fetch live Glue columns for %s, using static def: %s", table_def.table_name, e)
+        if not live_cols:
+            live_cols = set(table_def.column_names)
 
-        new_cols: List[ColumnDefinition] = []
+        # Columns the code expects but the live table lacks (typed from the definition).
+        new_cols: List[ColumnDefinition] = [
+            ColumnDefinition(name=c.name, data_type=c.data_type, comment=c.comment)
+            for c in table_def.columns
+            if c.name not in live_cols
+        ]
+        static_names = set(table_def.column_names)
 
         type_mapping = {
             pa.string(): "string",
@@ -172,7 +184,7 @@ class IcebergLoader:
 
         for field in incoming_schema:
             col_name = field.name
-            if col_name not in live_cols and not col_name.startswith("_"):
+            if col_name not in live_cols and col_name not in static_names and not col_name.startswith("_"):
                 athena_type = type_mapping.get(field.type, "string")
                 new_col = ColumnDefinition(
                     name=col_name,
@@ -195,7 +207,11 @@ class IcebergLoader:
                 self.athena.run_ddl(alter_ddl)
                 logger.info("Applied schema evolution DDL to '%s'", table_def.table_name)
             except Exception as e:
-                logger.warning("Could not apply ALTER TABLE DDL via Athena: %s", str(e))
+                # Without the columns the MERGE fails anyway, with a less clear error.
+                raise RuntimeError(
+                    f"Schema evolution for {table_def.table_name} failed "
+                    f"(ALTER TABLE ADD COLUMNS {[c.name for c in new_cols]}): {e}"
+                ) from e
 
         return new_cols
 

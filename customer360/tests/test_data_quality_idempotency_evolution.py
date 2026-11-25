@@ -623,7 +623,10 @@ class TestSchemaEvolution(unittest.TestCase):
         mock_s3.get_paginator.return_value = mock_paginator
         mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: data)}
 
-        existing_cols_raw = [{"Name": c} for c in (existing_glue_columns or [])]
+        # Like real Glue: the table's defined columns plus any evolved ones.
+        existing_cols_raw = [{"Name": c} for c in get_table_definition(source, entity).column_names] + [
+            {"Name": c} for c in (existing_glue_columns or [])
+        ]
 
         mock_glue = MagicMock()
         mock_glue.table_exists.return_value = True
